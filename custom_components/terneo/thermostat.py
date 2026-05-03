@@ -14,6 +14,7 @@ from .const import (
     DEVICE_TYPE_NEW,
     CMD_GET_PARAMS,
     CMD_GET_STATUS,
+    DEFAULT_MAX_UPDATE_FAILURES,
     DEFAULT_TIMEOUT,
 )
 
@@ -44,12 +45,14 @@ class TerneoThermostat:
         host: str,
         device_type: str = DEVICE_TYPE_OLD,
         timeout: int = DEFAULT_TIMEOUT,
+        max_update_failures: int = DEFAULT_MAX_UPDATE_FAILURES,
     ):
         """Initialize the thermostat."""
         self.sn = serial_number
         self.device_type = device_type
         self._is_new_version = device_type == DEVICE_TYPE_NEW
         self._timeout = timeout
+        self._max_update_failures = max_update_failures
         
         self._base_url = f"http://{host}/{{endpoint}}.cgi"
         self._last_request = time.time()
@@ -58,6 +61,8 @@ class TerneoThermostat:
         self._available = False
         self._parameters: dict[int, Any] = {}
         self._status: dict[str, Any] = {}
+        self._consecutive_update_failures = 0
+        self._last_update_error: str | None = None
         
         # Derived state
         self._setpoint: float | None = None
@@ -90,8 +95,10 @@ class TerneoThermostat:
 
     def _post(self, endpoint: str = "api", **kwargs) -> dict | bool:
         """Perform a POST request with rate limiting."""
-        kwergs = {}
-        kwergs.update(kwargs)
+        request_kwargs = dict(kwargs)
+        headers = request_kwargs.pop("headers", {}) or {}
+        headers = {"Connection": "close", **headers}
+        request_kwargs["headers"] = headers
 
         # Rate limiting
         start_time = time.time()
@@ -99,11 +106,16 @@ class TerneoThermostat:
             time.sleep(1)
 
         try:
-            r = requests.post(self._get_url(endpoint), timeout=self._timeout, **kwergs)
+            r = requests.post(
+                self._get_url(endpoint),
+                timeout=self._timeout,
+                **request_kwargs,
+            )
+            r.raise_for_status()
         except Exception as e:
-            self._available = False
             self._last_request = time.time()
-            _LOGGER.error("POST request failed: %s", e)
+            self._last_update_error = f"POST request failed: {e}"
+            _LOGGER.debug("%s", self._last_update_error)
             return False
         
         self._last_request = time.time()
@@ -111,15 +123,43 @@ class TerneoThermostat:
         try:
             content = r.json()
         except Exception as e:
-            _LOGGER.error("Failed to parse JSON response: %s", e)
+            self._last_update_error = f"Failed to parse JSON response: {e}"
+            _LOGGER.debug("%s", self._last_update_error)
             return False
 
         if content.get("status") == "timeout":
-            _LOGGER.warning("Terneo timeout for request: %s", kwargs.get("json", {}))
+            self._last_update_error = (
+                f"Terneo timeout for request: {kwargs.get('json', {})}"
+            )
+            _LOGGER.debug("%s", self._last_update_error)
             return False
         
-        self._available = True
         return content
+
+    def _mark_update_successful(self) -> None:
+        """Mark a full data refresh as successful."""
+        self._available = True
+        self._consecutive_update_failures = 0
+        self._last_update_error = None
+
+    def _mark_update_failed(self) -> None:
+        """Track failed refreshes without flapping availability on one miss."""
+        self._consecutive_update_failures += 1
+        if self._consecutive_update_failures >= self._max_update_failures:
+            if self._available:
+                _LOGGER.warning(
+                    "Terneo update failed %s times in a row; marking unavailable: %s",
+                    self._consecutive_update_failures,
+                    self._last_update_error or "unknown error",
+                )
+            self._available = False
+        else:
+            _LOGGER.debug(
+                "Terneo update failed (%s/%s); keeping cached state: %s",
+                self._consecutive_update_failures,
+                self._max_update_failures,
+                self._last_update_error or "unknown error",
+            )
 
     def get_parameters(self) -> dict | bool:
         """Get all parameters from the device."""
@@ -127,6 +167,8 @@ class TerneoThermostat:
         if result and "par" in result:
             self._parameters = {p[0]: (p[1], p[2]) for p in result["par"]}
             return result
+        if result:
+            self._last_update_error = "Parameter response did not contain 'par'"
         return False
 
     def set_parameters(self, params: list[list]) -> dict | bool:
@@ -138,6 +180,10 @@ class TerneoThermostat:
         result = self._post(json={"cmd": CMD_GET_STATUS, "sn": self.sn})
         if result:
             self._status = result
+        else:
+            self._last_update_error = (
+                self._last_update_error or "Empty status response"
+            )
         return result
 
     def restart(self) -> bool:
@@ -189,6 +235,16 @@ class TerneoThermostat:
     def available(self) -> bool:
         """Return if device is available."""
         return self._available
+
+    @property
+    def has_state(self) -> bool:
+        """Return if at least one full update populated cached state."""
+        return bool(self._parameters and self._status)
+
+    @property
+    def last_update_error(self) -> str | None:
+        """Return the last update error."""
+        return self._last_update_error
 
     @property
     def is_new_version(self) -> bool:
@@ -487,12 +543,9 @@ class TerneoThermostat:
         if mode not in [OperationMode.SCHEDULE, OperationMode.MANUAL]:
             raise ValueError("Mode must be 0 (schedule) or 3 (manual)")
         
-        # Map to API values: schedule=0, manual=1 for mode parameter
-        api_mode = 0 if mode == OperationMode.SCHEDULE else 1
-        
         result = self.set_parameters([
             [ParamNum.POWER_OFF, DataType.BOOL, "0"],
-            [ParamNum.MODE, DataType.UINT8, str(api_mode)],
+            [ParamNum.MODE, DataType.UINT8, str(mode)],
         ])
         return bool(result)
 
@@ -762,11 +815,13 @@ class TerneoThermostat:
         # Get parameters
         params_result = self.get_parameters()
         if not params_result:
+            self._mark_update_failed()
             return False
         
         # Get status
         status_result = self.get_status()
         if not status_result:
+            self._mark_update_failed()
             return False
         
         # Parse status
@@ -775,6 +830,7 @@ class TerneoThermostat:
         # Update power state from parameters
         self._power_on = not self._get_param_value(ParamNum.POWER_OFF)
         
+        self._mark_update_successful()
         return True
 
     def _parse_status(self, data: dict) -> None:

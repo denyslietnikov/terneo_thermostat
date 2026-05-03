@@ -80,8 +80,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             success = await hass.async_add_executor_job(thermostat.update)
             if not success:
-                raise UpdateFailed("Failed to update thermostat data")
+                if thermostat.available and thermostat.has_state:
+                    return thermostat
+                raise UpdateFailed(
+                    thermostat.last_update_error or "Failed to update thermostat data"
+                )
             return thermostat
+        except UpdateFailed:
+            raise
         except Exception as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err
 

@@ -228,11 +228,24 @@ class TerneoThermostat:
         return result
 
     def set_parameters(self, params: list[list]) -> dict | bool:
-        """Require the returned parameters to confirm every requested change."""
+        """Confirm every change in a full acknowledgement or legacy readback."""
         requested = self._parse_parameters(params)
         result = self._post(command=True, json={"sn": self.sn, "par": params})
         if result is False:
             return False
+        if (
+            not self._is_new_version
+            and result.get("success") == "true"
+            and set(result) <= {"success", "sn"}
+        ):
+            # AX firmware can acknowledge receipt even when a write is ignored.
+            # Verify without publishing partial state or repeating the write.
+            result = self._post(json={"cmd": CMD_GET_PARAMS, "sn": self.sn})
+            if result is False:
+                return self._request_failed(
+                    "Unable to verify legacy parameter write",
+                    command=True, uncertain=True,
+                )
         if result.get("sn") != self.sn:
             return self._request_failed(
                 "Missing thermostat identity in command acknowledgement",
@@ -608,6 +621,37 @@ class TerneoThermostat:
 
     # Setters
 
+    def _operation_mode_to_api(self, mode: int) -> str:
+        """Legacy Terneo manual parameter is 1; its telemetry reports 3."""
+        if mode == OperationMode.MANUAL and not self._is_new_version:
+            return "1"
+        return str(int(mode))
+
+    def set_hvac_mode(self, hvac_mode: str) -> bool:
+        """Send a complete HVAC transition in one validated parameter write."""
+        if hvac_mode == "off":
+            params = [[ParamNum.POWER_OFF, DataType.BOOL, "1"]]
+        elif hvac_mode == "auto":
+            params = [
+                [ParamNum.POWER_OFF, DataType.BOOL, "0"],
+                [ParamNum.MODE, DataType.UINT8, str(OperationMode.SCHEDULE)],
+            ]
+        elif hvac_mode in ("heat", "cool"):
+            params = [
+                [ParamNum.POWER_OFF, DataType.BOOL, "0"],
+                [
+                    ParamNum.COOLING_CONTROL_WAY,
+                    DataType.BOOL,
+                    "1" if hvac_mode == "cool" else "0",
+                ],
+                [ParamNum.MODE, DataType.UINT8,
+                 self._operation_mode_to_api(OperationMode.MANUAL)],
+            ]
+        else:
+            raise ValueError("Unsupported HVAC mode")
+        # Only a subsequent full poll publishes the resulting operating state.
+        return bool(self.set_parameters(params))
+
     def set_setpoint(self, temperature: float) -> bool:
         """Set target temperature."""
         control_type = self.control_type or ControlType.FLOOR
@@ -622,7 +666,8 @@ class TerneoThermostat:
         # Turn on, set manual mode, and set temperature
         result = self.set_parameters([
             [ParamNum.POWER_OFF, DataType.BOOL, "0"],
-            [ParamNum.MODE, DataType.UINT8, str(OperationMode.MANUAL)],
+            [ParamNum.MODE, DataType.UINT8,
+             self._operation_mode_to_api(OperationMode.MANUAL)],
             [param, DataType.INT8 if not self._is_new_version else DataType.INT16, temp_value],
         ])
         
@@ -631,13 +676,13 @@ class TerneoThermostat:
         return bool(result)
 
     def set_mode(self, mode: int) -> bool:
-        """Set operation mode (0=schedule, 3=manual)."""
+        """Set a telemetry-mode enum using the generation's parameter encoding."""
         if mode not in [OperationMode.SCHEDULE, OperationMode.MANUAL]:
             raise ValueError("Mode must be 0 (schedule) or 3 (manual)")
         
         result = self.set_parameters([
             [ParamNum.POWER_OFF, DataType.BOOL, "0"],
-            [ParamNum.MODE, DataType.UINT8, str(mode)],
+            [ParamNum.MODE, DataType.UINT8, self._operation_mode_to_api(mode)],
         ])
         return bool(result)
 

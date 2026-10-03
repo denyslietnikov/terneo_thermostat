@@ -203,33 +203,11 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new HVAC mode."""
-        if hvac_mode == HVACMode.OFF:
-            await self.coordinator.async_execute_command(self._thermostat.turn_off)
-        elif hvac_mode == HVACMode.HEAT:
-            await self.coordinator.async_execute_command(self._thermostat.turn_on)
-            await self.coordinator.async_execute_command(
-                self._thermostat.set_cooling_mode, False
-            )
-            await self.coordinator.async_execute_command(
-                self._thermostat.set_mode, OperationMode.MANUAL
-            )
-        elif hvac_mode == HVACMode.COOL:
-            await self.coordinator.async_execute_command(self._thermostat.turn_on)
-            await self.coordinator.async_execute_command(
-                self._thermostat.set_cooling_mode, True
-            )
-            await self.coordinator.async_execute_command(
-                self._thermostat.set_mode, OperationMode.MANUAL
-            )
-        elif hvac_mode == HVACMode.AUTO:
-            await self.coordinator.async_execute_command(self._thermostat.turn_on)
-            await self.coordinator.async_execute_command(
-                self._thermostat.set_mode, OperationMode.SCHEDULE
-            )
-        
-        else:
+        if hvac_mode not in HVAC_MODES:
             raise ServiceValidationError(f"Unsupported HVAC mode: {hvac_mode}")
-
+        await self.coordinator.async_execute_command(
+            self._thermostat.set_hvac_mode, hvac_mode, refresh_on_failure=True
+        )
         await self.coordinator.async_request_refresh()
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:

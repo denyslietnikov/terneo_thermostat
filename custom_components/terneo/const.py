@@ -85,7 +85,7 @@ class ControlType(IntEnum):
 
 # Operation modes
 class OperationMode(IntEnum):
-    """Operation modes."""
+    """Telemetry operation modes, not parameter-write values."""
     SCHEDULE = 0
     MANUAL = 3
     AWAY = 4  # When away times are set

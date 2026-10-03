@@ -36,9 +36,32 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         self.thermostat = thermostat
         self._request_lock = asyncio.Lock()
 
+    async def _async_execute_request(
+        self, command: Callable[..., Any], *args: Any
+    ) -> Any:
+        """Keep the caller's lock until executor work finishes, even on cancellation."""
+        request = asyncio.ensure_future(self.hass.async_add_executor_job(command, *args))
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(request)
+            except asyncio.CancelledError:
+                if request.cancelled():
+                    raise
+                cancelled = True
+            except Exception:
+                if cancelled:
+                    raise asyncio.CancelledError from None
+                raise
+            else:
+                break
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
     async def _async_update_data(self) -> TerneoThermostat:
         async with self._request_lock:
-            success = await self.hass.async_add_executor_job(self.thermostat.update)
+            success = await self._async_execute_request(self.thermostat.update)
         if success or (self.thermostat.available and self.thermostat.has_state):
             return self.thermostat
         raise UpdateFailed(
@@ -46,18 +69,27 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         )
 
     async def async_execute_command(
-        self, command: Callable[..., Any], *args: Any
+        self, command: Callable[..., Any], *args: Any, refresh_on_failure: bool = False
     ) -> None:
         """Expose failed commands to the UI and automation traces."""
+        error = None
         async with self._request_lock:
             try:
-                success = await self.hass.async_add_executor_job(command, *args)
+                success = await self._async_execute_request(command, *args)
             except ValueError as err:
                 raise ServiceValidationError(str(err)) from err
             if not success:
-                raise HomeAssistantError(
+                error = HomeAssistantError(
                     self.thermostat.last_update_error or "Thermostat command failed"
                 )
+        if error is not None:
+            # Refresh outside the lock: polling acquires the same per-device lock.
+            if refresh_on_failure:
+                try:
+                    await self.async_request_refresh()
+                except HomeAssistantError:
+                    _LOGGER.debug("Unable to refresh thermostat after a failed command")
+            raise error
 
 
 TerneoConfigEntry = ConfigEntry[TerneoCoordinator]

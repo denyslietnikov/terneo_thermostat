@@ -1,5 +1,6 @@
 """Terneo/Welrok Thermostat API client."""
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -47,6 +48,7 @@ class TerneoThermostat:
         device_type: str = DEVICE_TYPE_OLD,
         timeout: int = DEFAULT_TIMEOUT,
         max_update_failures: int = DEFAULT_MAX_UPDATE_FAILURES,
+        max_heating_interval: float = 300,
     ):
         """Initialize the thermostat."""
         self.sn = serial_number
@@ -54,6 +56,7 @@ class TerneoThermostat:
         self._is_new_version = device_type == DEVICE_TYPE_NEW
         self._timeout = timeout
         self._max_update_failures = max_update_failures
+        self._max_heating_interval = max_heating_interval
         
         self._base_url = f"http://{host}/{{endpoint}}.cgi"
         self._last_request = time.monotonic()
@@ -90,6 +93,7 @@ class TerneoThermostat:
         
         # Energy tracking
         self._last_relay_update: float | None = None
+        self._last_relay_power_watts: int | None = None
         self._heating_energy_kwh: float = 0.0  # Accumulated energy in kWh
         self._heating_time_seconds: float = 0.0  # Accumulated heating time in seconds
         
@@ -228,6 +232,7 @@ class TerneoThermostat:
 
     def _mark_update_failed(self) -> None:
         """Track failed refreshes without flapping availability on one miss."""
+        self.break_heating_interval()
         self._consecutive_update_failures += 1
         self._last_refresh_error = self._last_update_error
         self._last_refresh_error_category = self._last_request_error_category
@@ -336,6 +341,8 @@ class TerneoThermostat:
             for key in ("m.1", "f.0", "f.16"):
                 if key in result:
                     int(result[key])
+            if "f.0" in result and str(result["f.0"]) not in ("0", "1"):
+                raise ValueError("Invalid relay state")
         except (TypeError, ValueError):
             return self._request_failed("Invalid status response")
         self._status = result
@@ -1114,41 +1121,75 @@ class TerneoThermostat:
             new_relay_state = int(data["f.0"]) == 1
             self._update_energy_tracking(new_relay_state)
             self._relay_state = new_relay_state
+        else:
+            self.break_heating_interval()
+
+    def break_heating_interval(self) -> None:
+        """Do not integrate time with unknown relay state, including grace periods."""
+        self._last_relay_update = None
+        self._last_relay_power_watts = None
 
     def _update_energy_tracking(self, new_relay_state: bool) -> None:
-        """Update energy consumption tracking based on relay state."""
-        current_time = time.time()
+        """Estimate the preceding confirmed relay interval using its sampled wattage."""
+        current_time = time.monotonic()
         
         # If we have a previous measurement and relay was ON, calculate energy
         if self._last_relay_update is not None and self._relay_state is True:
             elapsed_seconds = current_time - self._last_relay_update
             
-            # Sanity check: skip if elapsed time is too long (>5 min) or negative
-            # This prevents accumulating large errors after restarts/gaps
-            if 0 < elapsed_seconds <= 300:
-                power_watts = self.power_watts
+            if 0 < elapsed_seconds <= self._max_heating_interval:
+                self._heating_time_seconds += elapsed_seconds
+                power_watts = self._last_relay_power_watts
                 if power_watts and power_watts > 0:
-                    # Calculate energy in kWh: (W * seconds) / (1000 * 3600)
                     energy_kwh = (power_watts * elapsed_seconds) / 3600000.0
                     self._heating_energy_kwh += energy_kwh
-                    self._heating_time_seconds += elapsed_seconds
         
         self._last_relay_update = current_time
+        self._last_relay_power_watts = self.power_watts if new_relay_state else None
+
+    @property
+    def energy_counters(self) -> dict[str, float]:
+        """Return unrounded totals; never persist an interval anchor or relay state."""
+        return {
+            "heating_energy_kwh": self._heating_energy_kwh,
+            "heating_time_seconds": self._heating_time_seconds,
+        }
+
+    def restore_energy_counters(self, data: Any) -> None:
+        """Validate stored totals atomically and begin a new observation interval."""
+        keys = ("heating_energy_kwh", "heating_time_seconds")
+        if not isinstance(data, dict) or any(key not in data for key in keys):
+            raise ValueError("Invalid stored heating counters")
+        values = []
+        for key in keys:
+            value = data[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("Invalid stored heating counters")
+            try:
+                number = float(value)
+            except OverflowError as err:
+                raise ValueError("Invalid stored heating counters") from err
+            if not math.isfinite(number) or number < 0:
+                raise ValueError("Invalid stored heating counters")
+            values.append(number)
+        self._heating_energy_kwh, self._heating_time_seconds = values
+        self.break_heating_interval()
 
     @property
     def heating_energy_kwh(self) -> float:
-        """Total energy consumed by heating in kWh (since integration start)."""
+        """Persisted estimated energy consumed by heating in kWh."""
         return round(self._heating_energy_kwh, 3)
 
     @property
     def heating_time_hours(self) -> float:
-        """Total heating time in hours (since integration start)."""
+        """Persisted observed heating time in hours, independent of configured power."""
         return round(self._heating_time_seconds / 3600.0, 2)
 
     def reset_energy_counter(self) -> None:
         """Reset energy and time counters."""
         self._heating_energy_kwh = 0.0
         self._heating_time_seconds = 0.0
+        self.break_heating_interval()
 
 
 # Backward compatibility alias

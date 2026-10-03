@@ -19,8 +19,9 @@ model and firmware; firmware-specific validation is documented in [PLAN.md](PLAN
 - Temperature limits, brightness, child lock, and other model-specific settings.
 - Connection diagnostics and Home Assistant diagnostics download.
 
-Energy tracking requires the heater wattage to be configured on the thermostat.
-Energy and heating-time counters currently reset on integration reload or HA restart.
+Energy is estimated from relay state and configured heater wattage; heating time
+does not require wattage. Counters survive normal HA restarts and integration reloads.
+The first upgrade starts new persistent totals; previous history is not imported.
 
 ## Installation
 

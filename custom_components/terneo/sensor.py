@@ -138,7 +138,6 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.HOURS,
         icon="mdi:timer",
         value_fn=lambda t: t.heating_time_hours,
-        available_fn=lambda t: t.power_watts is not None and t.power_watts > 0,
     ),
     TerneoSensorEntityDescription(
         key="current_power",

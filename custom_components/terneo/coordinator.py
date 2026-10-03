@@ -3,19 +3,25 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
+from hashlib import sha256
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryError, HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DEFAULT_SCAN_INTERVAL
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
+ENERGY_SAVE_INTERVAL = timedelta(minutes=5)
+ENERGY_STORAGE_VERSION = 1
 
 
 class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
@@ -35,6 +41,70 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         )
         self.thermostat = thermostat
         self._request_lock = asyncio.Lock()
+        identity = sha256(thermostat.sn.encode()).hexdigest()
+        self._energy_store: Store[dict[str, float]] = Store(
+            hass, ENERGY_STORAGE_VERSION, f"{DOMAIN}.energy.{identity}",
+            private=True, atomic_writes=True,
+        )
+        self._energy_restored = False
+        self._energy_shutdown_complete = False
+        self._unsub_energy_save: CALLBACK_TYPE | None = None
+        self._unsub_energy_stop: CALLBACK_TYPE | None = None
+
+    async def async_restore_energy_counters(self) -> None:
+        """Restore before the first poll and before platform entities are created."""
+        if self._energy_restored:
+            return
+        data = await self._energy_store.async_load()
+        if data is not None:
+            try:
+                self.thermostat.restore_energy_counters(data)
+            except ValueError as err:
+                # Do not silently overwrite invalid nonempty storage with zeros.
+                raise ConfigEntryError("Invalid stored heating counters") from err
+        self._energy_restored = True
+
+    @callback
+    def async_start_energy_persistence(self) -> None:
+        """Bound disk writes independently of poll frequency, including idle periods."""
+        if (
+            not self._energy_restored or self._energy_shutdown_complete
+            or self._unsub_energy_save is not None
+        ):
+            return
+
+        async def save_periodically(_now: datetime) -> None:
+            await self.async_save_energy_counters()
+
+        async def save_on_stop(_event: Event) -> None:
+            self._unsub_energy_stop = None
+            await self.async_shutdown()
+
+        self._unsub_energy_save = async_track_time_interval(
+            self.hass, save_periodically, ENERGY_SAVE_INTERVAL
+        )
+        self._unsub_energy_stop = self.hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP, save_on_stop
+        )
+
+    async def async_save_energy_counters(self) -> None:
+        """Persist only verified totals, with the executor excluded by the device lock."""
+        async with self._request_lock:
+            if not self._energy_restored or self._energy_shutdown_complete:
+                return
+            await self._energy_store.async_save(self.thermostat.energy_counters)
+
+    async def async_shutdown(self) -> None:
+        """Stop all timers and flush confirmed counters without estimating a tail."""
+        if self._unsub_energy_save is not None:
+            self._unsub_energy_save()
+            self._unsub_energy_save = None
+        if self._unsub_energy_stop is not None:
+            self._unsub_energy_stop()
+            self._unsub_energy_stop = None
+        await super().async_shutdown()
+        await self.async_save_energy_counters()
+        self._energy_shutdown_complete = True
 
     async def _async_execute_request(
         self, command: Callable[..., Any], *args: Any
@@ -61,7 +131,11 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
 
     async def _async_update_data(self) -> TerneoThermostat:
         async with self._request_lock:
-            success = await self._async_execute_request(self.thermostat.update)
+            try:
+                success = await self._async_execute_request(self.thermostat.update)
+            except Exception:
+                self.thermostat.break_heating_interval()
+                raise
         if success or (self.thermostat.available and self.thermostat.has_state):
             return self.thermostat
         raise UpdateFailed(

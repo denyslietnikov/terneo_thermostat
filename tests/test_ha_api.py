@@ -214,11 +214,41 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             (TerneoSelectEntity(coordinator, thermostat, config, SELECT_DESCRIPTIONS[1]), "async_select_option", ("10k",)),
             (TerneoRestartButton(coordinator, thermostat, config), "async_press", ()),
         ]
-        with patch("requests.post", side_effect=requests.Timeout("offline")):
-            for entity, method, args in entities:
-                with self.subTest(platform=type(entity).__name__):
-                    with self.assertRaises(HomeAssistantError):
-                        await getattr(entity, method)(*args)
+        coordinator.async_request_refresh = AsyncMock()
+        for scenario, http in (
+            ("timeout", {"side_effect": requests.Timeout("offline")}),
+            ("blocked", {"return_value": response({"success": "block"})}),
+            ("error", {"return_value": response({"status": "error"})}),
+            ("unconfirmed", {"return_value": response({"sn": thermostat.sn})}),
+        ):
+            with patch("requests.post", **http):
+                for entity, method, args in entities:
+                    with self.subTest(scenario=scenario, platform=type(entity).__name__):
+                        with self.assertRaises(HomeAssistantError):
+                            await getattr(entity, method)(*args)
+        coordinator.async_request_refresh.assert_not_awaited()
+
+    async def test_confirmed_command_updates_cache_and_refreshes(self):
+        config, thermostat, coordinator = self.make_coordinator()
+        thermostat._power_on = True
+        coordinator.async_request_refresh = AsyncMock()
+        climate = TerneoClimateEntity(coordinator, thermostat, config)
+        with patch("requests.post", return_value=response({
+            "sn": thermostat.sn, "par": [[125, 7, "1"]],
+        })):
+            await climate.async_turn_off()
+        self.assertFalse(thermostat.power_on)
+        coordinator.async_request_refresh.assert_awaited_once()
+
+    async def test_uncertain_command_error_reaches_home_assistant(self):
+        _, thermostat, coordinator = self.make_coordinator()
+        thermostat._power_on = True
+        with patch("requests.post", side_effect=requests.Timeout("private details")) as post:
+            with self.assertRaisesRegex(HomeAssistantError, "outcome is unknown") as error:
+                await coordinator.async_execute_command(thermostat.turn_off)
+        self.assertNotIn("private details", str(error.exception))
+        self.assertTrue(thermostat.power_on)
+        post.assert_called_once()
 
     async def test_entities_follow_coordinator_failure(self):
         config, thermostat, coordinator = self.make_coordinator()

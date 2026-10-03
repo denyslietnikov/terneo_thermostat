@@ -82,7 +82,21 @@ class TerneoThermostat:
         """Get the full URL for an endpoint."""
         return self._base_url.format(endpoint=endpoint)
 
-    def _post(self, endpoint: str = "api", **kwargs) -> dict | bool:
+    def _request_failed(
+        self, message: str, *, command: bool = False, uncertain: bool = False
+    ) -> bool:
+        """Record a safe error without exposing request or response contents."""
+        if command and uncertain:
+            message += (
+                ". Command outcome is unknown; refresh device state before retrying"
+            )
+        self._last_update_error = message
+        _LOGGER.debug("%s", message)
+        return False
+
+    def _post(
+        self, endpoint: str = "api", *, command: bool = False, **kwargs
+    ) -> dict | bool:
         """Perform a POST request with rate limiting."""
         request_kwargs = dict(kwargs)
         headers = request_kwargs.pop("headers", {}) or {}
@@ -102,33 +116,54 @@ class TerneoThermostat:
                 **request_kwargs,
             )
             r.raise_for_status()
-        except requests.RequestException as e:
+        except requests.RequestException as err:
             self._last_request = time.monotonic()
-            self._last_update_error = f"POST request failed: {e}"
-            _LOGGER.debug("%s", self._last_update_error)
-            return False
+            if isinstance(err, requests.Timeout):
+                message = "Thermostat request timed out"
+            elif isinstance(err, requests.HTTPError):
+                status_code = getattr(err.response, "status_code", None)
+                message = (
+                    f"Thermostat returned HTTP {status_code}"
+                    if isinstance(status_code, int)
+                    else "Thermostat returned an HTTP error"
+                )
+            else:
+                message = "Unable to communicate with thermostat"
+            return self._request_failed(message, command=command, uncertain=True)
         
         self._last_request = time.monotonic()
         
         try:
             content = r.json()
-        except ValueError as e:
-            self._last_update_error = f"Failed to parse JSON response: {e}"
-            _LOGGER.debug("%s", self._last_update_error)
-            return False
+        except ValueError:
+            return self._request_failed(
+                "Failed to parse JSON response", command=command, uncertain=True
+            )
 
         if not isinstance(content, dict):
-            self._last_update_error = "Expected a JSON object from thermostat"
-            return False
-        if "sn" in content and content["sn"] != self.sn:
-            self._last_update_error = "Thermostat serial number mismatch"
-            return False
-        if content.get("status") == "timeout":
-            self._last_update_error = (
-                f"Terneo timeout for request: {kwargs.get('json', {})}"
+            return self._request_failed(
+                "Expected a JSON object from thermostat",
+                command=command, uncertain=True,
             )
-            _LOGGER.debug("%s", self._last_update_error)
-            return False
+        if "sn" in content and content["sn"] != self.sn:
+            return self._request_failed(
+                "Thermostat serial number mismatch", command=command, uncertain=True
+            )
+        if content.get("success") == "block":
+            return self._request_failed("Thermostat rejected request: LAN control is blocked")
+        if "error" in content or (
+            "success" in content and content["success"] != "true"
+        ):
+            return self._request_failed(
+                "Thermostat returned an error response", command=command, uncertain=True
+            )
+        if "status" in content and content["status"] != "ok":
+            message = (
+                "Thermostat reported a timeout"
+                if content["status"] == "timeout"
+                else "Thermostat returned an unexpected status"
+            )
+            return self._request_failed(message, command=command, uncertain=True)
         
         return content
 
@@ -152,33 +187,73 @@ class TerneoThermostat:
                 self._last_update_error or "unknown error",
             )
 
+    def _parse_parameters(self, params: Any) -> dict[int, tuple[int, str]]:
+        """Validate protocol records without publishing them to the state cache."""
+        if not isinstance(params, list) or not params:
+            raise ValueError("Expected a nonempty parameter list")
+        parsed = {}
+        for param in params:
+            if not isinstance(param, list) or len(param) != 3:
+                raise ValueError("Invalid parameter record")
+            number, data_type, value = param
+            if (
+                not isinstance(number, int) or isinstance(number, bool) or number < 0
+                or not isinstance(data_type, int) or isinstance(data_type, bool)
+                or data_type not in DataType
+            ):
+                raise ValueError("Invalid parameter number or type")
+            if number in parsed:
+                raise ValueError("Duplicate parameter record")
+            if not isinstance(value, str):
+                raise ValueError("Expected a string parameter value")
+            if data_type == DataType.BOOL and value not in ("0", "1"):
+                raise ValueError("Invalid boolean parameter value")
+            try:
+                self._convert_value(value, data_type)
+            except ValueError as err:
+                raise ValueError("Invalid numeric parameter value") from err
+            parsed[number] = (data_type, value)
+        return parsed
+
     def get_parameters(self) -> dict | bool:
         """Get all parameters from the device."""
         result = self._post(json={"cmd": CMD_GET_PARAMS, "sn": self.sn})
         if result is False:
             return False
         try:
-            params = result["par"]
-            if not isinstance(params, list) or not params:
-                raise ValueError("Expected a nonempty parameter list")
-            parsed = {}
-            for param in params:
-                if not isinstance(param, list) or len(param) != 3:
-                    raise ValueError("Invalid parameter record")
-                number, data_type, value = param
-                if not isinstance(number, int) or not isinstance(data_type, int):
-                    raise ValueError("Invalid parameter number or type")
-                self._convert_value(value, data_type)
-                parsed[number] = (data_type, value)
-        except (KeyError, TypeError, ValueError) as err:
-            self._last_update_error = f"Invalid parameter response: {err}"
-            return False
+            parsed = self._parse_parameters(result.get("par"))
+        except ValueError as err:
+            return self._request_failed(f"Invalid parameter response: {err}")
         self._parameters = parsed
         return result
 
     def set_parameters(self, params: list[list]) -> dict | bool:
-        """Set parameters on the device."""
-        return self._post(json={"sn": self.sn, "par": params})
+        """Require the returned parameters to confirm every requested change."""
+        requested = self._parse_parameters(params)
+        result = self._post(command=True, json={"sn": self.sn, "par": params})
+        if result is False:
+            return False
+        if result.get("sn") != self.sn:
+            return self._request_failed(
+                "Missing thermostat identity in command acknowledgement",
+                command=True, uncertain=True,
+            )
+        try:
+            confirmed = self._parse_parameters(result.get("par"))
+        except ValueError as err:
+            return self._request_failed(
+                f"Invalid command acknowledgement: {err}", command=True, uncertain=True
+            )
+        for number, (data_type, value) in requested.items():
+            if number not in confirmed or confirmed[number][0] != data_type or (
+                self._convert_value(confirmed[number][1], data_type)
+                != self._convert_value(value, data_type)
+            ):
+                return self._request_failed(
+                    "Thermostat did not confirm all requested parameters",
+                    command=True, uncertain=True,
+                )
+        return result
 
     def get_status(self) -> dict | bool:
         """Get the status dictionary from the thermostat."""
@@ -202,12 +277,15 @@ class TerneoThermostat:
 
     def restart(self) -> bool:
         """Restart the device."""
-        result = self._post(endpoint="test", json={"cmd": "restart"})
-        if result and result.get("success") == "true":
-            _LOGGER.info("Device restart command sent successfully")
-            return True
-        _LOGGER.warning("Failed to send restart command")
-        return False
+        result = self._post(endpoint="test", command=True, json={"cmd": "restart"})
+        if result is False:
+            return False
+        if result.get("success") != "true":
+            return self._request_failed(
+                "Missing restart acknowledgement", command=True, uncertain=True
+            )
+        _LOGGER.info("Device restart command acknowledged")
+        return True
 
     def _get_param_value(self, param_num: int) -> Any | None:
         """Get a parameter value from cache."""
@@ -549,7 +627,7 @@ class TerneoThermostat:
         ])
         
         if result:
-            self._setpoint = temperature
+            self._setpoint = self._temperature_from_api(int(temp_value), param)
         return bool(result)
 
     def set_mode(self, mode: int) -> bool:

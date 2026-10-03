@@ -76,6 +76,25 @@ data:
 Minimum and maximum limits are validated before sending a command. Failed
 commands raise an error visible in the UI and automation traces.
 
+### Command Acknowledgements
+
+For both supported protocol versions, parameter writes must return a matching
+serial number and a valid `par` list confirming every requested parameter's
+type and value. An HTTP 200 response alone is not proof of success.
+Blocked writes, error responses, malformed acknowledgements, and returned values
+that differ from or omit the request are reported as failures. Cached power and target
+temperature are updated only after confirmation.
+
+Restart retains the existing `test.cgi` contract: the response must contain
+`{"success":"true"}`, without conflicting error markers. This endpoint is not
+covered by the referenced Welrok parameter documentation; no live restart was
+performed to verify it.
+
+If a request times out or its acknowledgement cannot be validated, the command
+may already have reached the device. The integration reports an unknown outcome
+and does not automatically retry the write. Check the device state after the
+next successful poll before retrying.
+
 ## Installation
 
 ### HACS (Recommended)
@@ -123,8 +142,20 @@ automatically.
 
 This integration uses the Welrok Local API:
 
-- [New version (OZ with air sensor)](https://welrok-local-api.readthedocs.io/en/latest/OZ/en/parameters.html)
-- [Old version (OZ without air sensor)](https://welrok-local-api.readthedocs.io/en/latest/Old/en/parameters.html)
+- [New version (OZ with air sensor)](https://welrok-local-api.readthedocs.io/OZ/en/parameters.html)
+- [Old version (OZ without air sensor)](https://welrok-local-api.readthedocs.io/Old/en/parameters.html)
+
+### Regression Tests
+
+In a Python environment with Home Assistant, its dependencies, and pytest:
+
+```sh
+python -m pytest tests -q
+```
+
+The stage 1 suite passed on Home Assistant 2026.9.4: 37 tests and 98 subtests.
+HTTP responses are mocked; write acknowledgements on physical devices and the
+declared minimum Home Assistant version are not verified by this result.
 
 ### Security Note
 

@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, ControlType, SENSOR_TYPES
+from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -128,13 +128,12 @@ SELECT_DESCRIPTIONS: tuple[TerneoSelectEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TerneoConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Terneo select entities from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    thermostat = data["thermostat"]
+    coordinator = entry.runtime_data
+    thermostat = coordinator.thermostat
 
     entities = []
     for description in SELECT_DESCRIPTIONS:
@@ -147,7 +146,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class TerneoSelectEntity(CoordinatorEntity, SelectEntity):
+class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
     """Terneo select entity."""
 
     _attr_has_entity_name = True
@@ -155,9 +154,9 @@ class TerneoSelectEntity(CoordinatorEntity, SelectEntity):
 
     def __init__(
         self,
-        coordinator,
+        coordinator: TerneoCoordinator,
         thermostat: TerneoThermostat,
-        entry: ConfigEntry,
+        entry: TerneoConfigEntry,
         description: TerneoSelectEntityDescription,
     ) -> None:
         """Initialize the select entity."""
@@ -186,11 +185,11 @@ class TerneoSelectEntity(CoordinatorEntity, SelectEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self._thermostat.available
+        return super().available and self._thermostat.available
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
-        await self.hass.async_add_executor_job(
+        await self.coordinator.async_execute_command(
             self.entity_description.set_fn, self._thermostat, option
         )
         await self.coordinator.async_request_refresh()

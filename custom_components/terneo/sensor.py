@@ -11,13 +11,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, UnitOfPower, UnitOfTime, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, SENSOR_TYPES
+from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,13 +161,12 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TerneoConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Terneo sensor entities from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    thermostat = data["thermostat"]
+    coordinator = entry.runtime_data
+    thermostat = coordinator.thermostat
 
     entities = []
     for description in SENSOR_DESCRIPTIONS:
@@ -180,7 +179,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class TerneoSensorEntity(CoordinatorEntity, SensorEntity):
+class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
     """Terneo sensor entity."""
 
     _attr_has_entity_name = True
@@ -188,9 +187,9 @@ class TerneoSensorEntity(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self,
-        coordinator,
+        coordinator: TerneoCoordinator,
         thermostat: TerneoThermostat,
-        entry: ConfigEntry,
+        entry: TerneoConfigEntry,
         description: TerneoSensorEntityDescription,
     ) -> None:
         """Initialize the sensor entity."""
@@ -198,6 +197,10 @@ class TerneoSensorEntity(CoordinatorEntity, SensorEntity):
         self._thermostat = thermostat
         self._entry = entry
         self.entity_description = description
+        self._attr_entity_registry_enabled_default = (
+            description.entity_registry_enabled_default
+            or entry.options.get("show_advanced_sensors", False)
+        )
         
         self._attr_unique_id = f"{thermostat.sn}_{description.key}"
         self._attr_device_info = {
@@ -216,7 +219,7 @@ class TerneoSensorEntity(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if not self._thermostat.available:
+        if not super().available or not self._thermostat.available:
             return False
         return self.entity_description.available_fn(self._thermostat)
 

@@ -10,13 +10,14 @@ from homeassistant.components.climate import (
     HVACAction,
     HVACMode,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, ControlType, OperationMode
+from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,18 +38,17 @@ PRESET_MODES = [PRESET_SCHEDULE, PRESET_MANUAL]
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TerneoConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Terneo climate entity from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    thermostat = data["thermostat"]
+    coordinator = entry.runtime_data
+    thermostat = coordinator.thermostat
 
     async_add_entities([TerneoClimateEntity(coordinator, thermostat, entry)])
 
 
-class TerneoClimateEntity(CoordinatorEntity, ClimateEntity):
+class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
     """Terneo climate entity."""
 
     _attr_has_entity_name = True
@@ -61,9 +61,9 @@ class TerneoClimateEntity(CoordinatorEntity, ClimateEntity):
 
     def __init__(
         self,
-        coordinator,
+        coordinator: TerneoCoordinator,
         thermostat: TerneoThermostat,
-        entry: ConfigEntry,
+        entry: TerneoConfigEntry,
     ) -> None:
         """Initialize the climate entity."""
         super().__init__(coordinator)
@@ -196,7 +196,7 @@ class TerneoClimateEntity(CoordinatorEntity, ClimateEntity):
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
         
-        await self.hass.async_add_executor_job(
+        await self.coordinator.async_execute_command(
             self._thermostat.set_setpoint, temperature
         )
         await self.coordinator.async_request_refresh()
@@ -204,52 +204,57 @@ class TerneoClimateEntity(CoordinatorEntity, ClimateEntity):
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new HVAC mode."""
         if hvac_mode == HVACMode.OFF:
-            await self.hass.async_add_executor_job(self._thermostat.turn_off)
+            await self.coordinator.async_execute_command(self._thermostat.turn_off)
         elif hvac_mode == HVACMode.HEAT:
-            await self.hass.async_add_executor_job(self._thermostat.turn_on)
-            await self.hass.async_add_executor_job(
+            await self.coordinator.async_execute_command(self._thermostat.turn_on)
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_cooling_mode, False
             )
-            await self.hass.async_add_executor_job(
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_mode, OperationMode.MANUAL
             )
         elif hvac_mode == HVACMode.COOL:
-            await self.hass.async_add_executor_job(self._thermostat.turn_on)
-            await self.hass.async_add_executor_job(
+            await self.coordinator.async_execute_command(self._thermostat.turn_on)
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_cooling_mode, True
             )
-            await self.hass.async_add_executor_job(
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_mode, OperationMode.MANUAL
             )
         elif hvac_mode == HVACMode.AUTO:
-            await self.hass.async_add_executor_job(self._thermostat.turn_on)
-            await self.hass.async_add_executor_job(
+            await self.coordinator.async_execute_command(self._thermostat.turn_on)
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_mode, OperationMode.SCHEDULE
             )
         
+        else:
+            raise ServiceValidationError(f"Unsupported HVAC mode: {hvac_mode}")
+
         await self.coordinator.async_request_refresh()
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set new preset mode."""
         if preset_mode == PRESET_SCHEDULE:
-            await self.hass.async_add_executor_job(
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_mode, OperationMode.SCHEDULE
             )
-        else:
-            await self.hass.async_add_executor_job(
+        elif preset_mode == PRESET_MANUAL:
+            await self.coordinator.async_execute_command(
                 self._thermostat.set_mode, OperationMode.MANUAL
             )
+        else:
+            raise ServiceValidationError(f"Unsupported preset: {preset_mode}")
         
         await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
         """Turn on the thermostat."""
-        await self.hass.async_add_executor_job(self._thermostat.turn_on)
+        await self.coordinator.async_execute_command(self._thermostat.turn_on)
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the thermostat."""
-        await self.hass.async_add_executor_job(self._thermostat.turn_off)
+        await self.coordinator.async_execute_command(self._thermostat.turn_off)
         await self.coordinator.async_request_refresh()
 
     @callback

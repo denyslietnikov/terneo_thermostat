@@ -55,13 +55,14 @@ class TerneoThermostat:
         self._max_update_failures = max_update_failures
         
         self._base_url = f"http://{host}/{{endpoint}}.cgi"
-        self._last_request = time.time()
+        self._last_request = time.monotonic()
         
         # Cached state
         self._available = False
         self._parameters: dict[int, Any] = {}
         self._status: dict[str, Any] = {}
         self._consecutive_update_failures = 0
+        self._has_state = False
         self._last_update_error: str | None = None
         
         # Derived state
@@ -77,18 +78,6 @@ class TerneoThermostat:
         self._heating_energy_kwh: float = 0.0  # Accumulated energy in kWh
         self._heating_time_seconds: float = 0.0  # Accumulated heating time in seconds
         
-        # Verify connection
-        try:
-            r = requests.get(
-                self._base_url.format(endpoint="api.html")[:-4],
-                timeout=self._timeout
-            )
-            if r.status_code == 200:
-                self._available = True
-        except Exception as e:
-            _LOGGER.error("Connection to Thermostat failed: %s", e)
-            raise
-
     def _get_url(self, endpoint: str) -> str:
         """Get the full URL for an endpoint."""
         return self._base_url.format(endpoint=endpoint)
@@ -101,9 +90,10 @@ class TerneoThermostat:
         request_kwargs["headers"] = headers
 
         # Rate limiting
-        start_time = time.time()
-        if start_time - self._last_request < 1:
-            time.sleep(1)
+        self._last_update_error = None
+        delay = 1 - (time.monotonic() - self._last_request)
+        if delay > 0:
+            time.sleep(delay)
 
         try:
             r = requests.post(
@@ -112,21 +102,27 @@ class TerneoThermostat:
                 **request_kwargs,
             )
             r.raise_for_status()
-        except Exception as e:
-            self._last_request = time.time()
+        except requests.RequestException as e:
+            self._last_request = time.monotonic()
             self._last_update_error = f"POST request failed: {e}"
             _LOGGER.debug("%s", self._last_update_error)
             return False
         
-        self._last_request = time.time()
+        self._last_request = time.monotonic()
         
         try:
             content = r.json()
-        except Exception as e:
+        except ValueError as e:
             self._last_update_error = f"Failed to parse JSON response: {e}"
             _LOGGER.debug("%s", self._last_update_error)
             return False
 
+        if not isinstance(content, dict):
+            self._last_update_error = "Expected a JSON object from thermostat"
+            return False
+        if "sn" in content and content["sn"] != self.sn:
+            self._last_update_error = "Thermostat serial number mismatch"
+            return False
         if content.get("status") == "timeout":
             self._last_update_error = (
                 f"Terneo timeout for request: {kwargs.get('json', {})}"
@@ -139,6 +135,7 @@ class TerneoThermostat:
     def _mark_update_successful(self) -> None:
         """Mark a full data refresh as successful."""
         self._available = True
+        self._has_state = True
         self._consecutive_update_failures = 0
         self._last_update_error = None
 
@@ -146,12 +143,6 @@ class TerneoThermostat:
         """Track failed refreshes without flapping availability on one miss."""
         self._consecutive_update_failures += 1
         if self._consecutive_update_failures >= self._max_update_failures:
-            if self._available:
-                _LOGGER.warning(
-                    "Terneo update failed %s times in a row; marking unavailable: %s",
-                    self._consecutive_update_failures,
-                    self._last_update_error or "unknown error",
-                )
             self._available = False
         else:
             _LOGGER.debug(
@@ -164,12 +155,26 @@ class TerneoThermostat:
     def get_parameters(self) -> dict | bool:
         """Get all parameters from the device."""
         result = self._post(json={"cmd": CMD_GET_PARAMS, "sn": self.sn})
-        if result and "par" in result:
-            self._parameters = {p[0]: (p[1], p[2]) for p in result["par"]}
-            return result
-        if result:
-            self._last_update_error = "Parameter response did not contain 'par'"
-        return False
+        if result is False:
+            return False
+        try:
+            params = result["par"]
+            if not isinstance(params, list) or not params:
+                raise ValueError("Expected a nonempty parameter list")
+            parsed = {}
+            for param in params:
+                if not isinstance(param, list) or len(param) != 3:
+                    raise ValueError("Invalid parameter record")
+                number, data_type, value = param
+                if not isinstance(number, int) or not isinstance(data_type, int):
+                    raise ValueError("Invalid parameter number or type")
+                self._convert_value(value, data_type)
+                parsed[number] = (data_type, value)
+        except (KeyError, TypeError, ValueError) as err:
+            self._last_update_error = f"Invalid parameter response: {err}"
+            return False
+        self._parameters = parsed
+        return result
 
     def set_parameters(self, params: list[list]) -> dict | bool:
         """Set parameters on the device."""
@@ -178,12 +183,21 @@ class TerneoThermostat:
     def get_status(self) -> dict | bool:
         """Get the status dictionary from the thermostat."""
         result = self._post(json={"cmd": CMD_GET_STATUS, "sn": self.sn})
-        if result:
-            self._status = result
-        else:
-            self._last_update_error = (
-                self._last_update_error or "Empty status response"
-            )
+        if result is False:
+            return False
+        try:
+            if not any(key in result for key in ("t.1", "t.5", "m.1", "f.0")):
+                raise ValueError("Response did not contain thermostat status")
+            for key in ("t.1", "t.5", "t.2"):
+                if key in result:
+                    float(result[key])
+            for key in ("m.1", "f.0", "f.16"):
+                if key in result:
+                    int(result[key])
+        except (TypeError, ValueError) as err:
+            self._last_update_error = f"Invalid status response: {err}"
+            return False
+        self._status = result
         return result
 
     def restart(self) -> bool:
@@ -239,7 +253,7 @@ class TerneoThermostat:
     @property
     def has_state(self) -> bool:
         """Return if at least one full update populated cached state."""
-        return bool(self._parameters and self._status)
+        return self._has_state
 
     @property
     def last_update_error(self) -> str | None:
@@ -812,7 +826,8 @@ class TerneoThermostat:
 
     def update(self) -> bool:
         """Update all state from device."""
-        # Get parameters
+        # Publish parameters and status from the same successful polling cycle.
+        previous_parameters = self._parameters
         params_result = self.get_parameters()
         if not params_result:
             self._mark_update_failed()
@@ -821,6 +836,7 @@ class TerneoThermostat:
         # Get status
         status_result = self.get_status()
         if not status_result:
+            self._parameters = previous_parameters
             self._mark_update_failed()
             return False
         

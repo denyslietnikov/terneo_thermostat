@@ -59,6 +59,22 @@ The integration automatically detects the device version during setup.
 ### Services
 - `terneo.set_floor_limits` - Set min/max floor temperature limits
 - `terneo.set_air_limits` - Set min/max air temperature limits (new version only)
+- `terneo.restart` - Restart the selected thermostat
+
+Actions require an explicit target (entity, device, or area). They do not
+broadcast to all configured thermostats. For example:
+
+```yaml
+action: terneo.set_floor_limits
+target:
+  entity_id: climate.my_thermostat
+data:
+  lower: 5
+  upper: 35
+```
+
+Minimum and maximum limits are validated before sending a command. Failed
+commands raise an error visible in the UI and automation traces.
 
 ## Installation
 
@@ -91,7 +107,17 @@ The integration automatically detects the device version during setup.
 After adding the integration, you can configure:
 
 - **Update interval** - How often to poll the device (10-300 seconds, default: 30)
+- **Connection timeout** - Request timeout (3-120 seconds, default: 5)
 - **Show advanced sensors** - Enable additional diagnostic sensors
+
+After a successful initial poll, one or two failed polls retain the last
+validated state. After three consecutive failed polls, the thermostat becomes
+unavailable. A successful poll restores availability. Retained readings may
+therefore be stale during a brief outage. Polling and commands are serialized
+per device.
+
+If the thermostat is offline when Home Assistant starts, setup is retried
+automatically.
 
 ## API Documentation
 

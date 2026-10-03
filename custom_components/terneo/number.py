@@ -11,13 +11,13 @@ from homeassistant.components.number import (
     NumberEntityDescription,
     NumberMode,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
+from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -344,13 +344,12 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TerneoConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Terneo number entities from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    thermostat = data["thermostat"]
+    coordinator = entry.runtime_data
+    thermostat = coordinator.thermostat
 
     entities = []
     for description in NUMBER_DESCRIPTIONS:
@@ -363,7 +362,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class TerneoNumberEntity(CoordinatorEntity, NumberEntity):
+class TerneoNumberEntity(CoordinatorEntity[TerneoCoordinator], NumberEntity):
     """Terneo number entity."""
 
     _attr_has_entity_name = True
@@ -371,9 +370,9 @@ class TerneoNumberEntity(CoordinatorEntity, NumberEntity):
 
     def __init__(
         self,
-        coordinator,
+        coordinator: TerneoCoordinator,
         thermostat: TerneoThermostat,
-        entry: ConfigEntry,
+        entry: TerneoConfigEntry,
         description: TerneoNumberEntityDescription,
     ) -> None:
         """Initialize the number entity."""
@@ -399,11 +398,11 @@ class TerneoNumberEntity(CoordinatorEntity, NumberEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self._thermostat.available
+        return super().available and self._thermostat.available
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the value."""
-        await self.hass.async_add_executor_job(
+        await self.coordinator.async_execute_command(
             self.entity_description.set_fn, self._thermostat, value
         )
         await self.coordinator.async_request_refresh()

@@ -4,12 +4,12 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
+from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,30 +17,29 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TerneoConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Terneo button entities from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    thermostat = data["thermostat"]
+    coordinator = entry.runtime_data
+    thermostat = coordinator.thermostat
 
     async_add_entities([TerneoRestartButton(coordinator, thermostat, entry)])
 
 
-class TerneoRestartButton(CoordinatorEntity, ButtonEntity):
+class TerneoRestartButton(CoordinatorEntity[TerneoCoordinator], ButtonEntity):
     """Terneo restart button entity."""
 
     _attr_has_entity_name = True
-    _attr_name = "Restart"
+    _attr_translation_key = "restart"
     _attr_icon = "mdi:restart"
     _attr_device_class = ButtonDeviceClass.RESTART
 
     def __init__(
         self,
-        coordinator,
+        coordinator: TerneoCoordinator,
         thermostat: TerneoThermostat,
-        entry: ConfigEntry,
+        entry: TerneoConfigEntry,
     ) -> None:
         """Initialize the button entity."""
         super().__init__(coordinator)
@@ -59,8 +58,8 @@ class TerneoRestartButton(CoordinatorEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self._thermostat.available
+        return super().available and self._thermostat.available
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        await self.hass.async_add_executor_job(self._thermostat.restart)
+        await self.coordinator.async_execute_command(self._thermostat.restart)

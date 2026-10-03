@@ -5,7 +5,6 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-import requests
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME
@@ -22,6 +21,8 @@ from .const import (
     DEFAULT_TIMEOUT,
 )
 
+from .thermostat import TerneoThermostat
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -30,58 +31,19 @@ async def validate_connection(hass: HomeAssistant, data: dict[str, Any]) -> dict
     host = data[CONF_HOST]
     serial = data[CONF_SERIAL]
     
-    base_url = f"http://{host}"
-    
-    # Try to connect and get device info
-    try:
-        response = await hass.async_add_executor_job(
-            lambda: requests.get(f"{base_url}/api.html", timeout=5)
-        )
-        if response.status_code != 200:
-            raise CannotConnect("Cannot connect to device")
-    except requests.RequestException as err:
-        _LOGGER.error("Connection error: %s", err)
-        raise CannotConnect("Cannot connect to device") from err
-    
-    # Try to get device parameters and detect version
-    try:
-        response = await hass.async_add_executor_job(
-            lambda: requests.post(
-                f"{base_url}/api.cgi",
-                json={"cmd": 1, "sn": serial},
-                timeout=5
-            )
-        )
-        result = response.json()
-        
-        if "sn" not in result:
-            raise CannotConnect("Invalid device response - check serial number")
-        
-        # Verify serial matches
-        if result["sn"] != serial:
-            raise CannotConnect("Serial number mismatch")
-        
-        # Detect device type by checking parameters
-        # New version has parameters like 4 (manualAir), 6 (awayAir), etc.
-        params = {p[0]: p for p in result.get("par", [])}
-        
-        # Check for new version specific parameters
-        has_air_sensor = 4 in params or 6 in params or 33 in params
-        
-        device_type = DEVICE_TYPE_NEW if has_air_sensor else DEVICE_TYPE_OLD
-        
-        return {
-            "serial": serial,
-            "device_type": device_type,
-            "title": f"terneo_{serial}",
-        }
-        
-    except requests.RequestException as err:
-        _LOGGER.error("Error getting device info: %s", err)
-        raise CannotConnect("Cannot get device info") from err
-    except (KeyError, ValueError) as err:
-        _LOGGER.error("Invalid response from device: %s", err)
-        raise CannotConnect("Invalid device response") from err
+    thermostat = TerneoThermostat(serial, host, timeout=DEFAULT_TIMEOUT)
+    result = await hass.async_add_executor_job(thermostat.get_parameters)
+    if not result or result.get("sn") != serial:
+        raise CannotConnect("Invalid device response - check address and serial")
+    params = {param[0] for param in result["par"]}
+    device_type = (
+        DEVICE_TYPE_NEW if params.intersection({4, 6, 33}) else DEVICE_TYPE_OLD
+    )
+    return {
+        "serial": serial,
+        "device_type": device_type,
+        "title": f"terneo_{serial}",
+    }
 
 
 class CannotConnect(Exception):

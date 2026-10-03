@@ -1,6 +1,7 @@
 """Terneo/Welrok Thermostat API client."""
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -64,6 +65,20 @@ class TerneoThermostat:
         self._consecutive_update_failures = 0
         self._has_state = False
         self._last_update_error: str | None = None
+        self._last_successful_update: datetime | None = None
+        self._last_successful_update_monotonic: float | None = None
+        self._last_refresh_error: str | None = None
+        self._last_refresh_error_category: str | None = None
+        self._request_count = 0
+        self._request_error_counts = dict.fromkeys(
+            ("timeout", "transport", "http", "json", "protocol"), 0
+        )
+        self._last_request_duration: float | None = None
+        self._last_request_at: datetime | None = None
+        self._last_request_kind: str | None = None
+        self._last_request_http_status: int | None = None
+        self._last_request_error: str | None = None
+        self._last_request_error_category: str | None = None
         
         # Derived state
         self._setpoint: float | None = None
@@ -83,7 +98,8 @@ class TerneoThermostat:
         return self._base_url.format(endpoint=endpoint)
 
     def _request_failed(
-        self, message: str, *, command: bool = False, uncertain: bool = False
+        self, message: str, *, command: bool = False, uncertain: bool = False,
+        category: str = "protocol",
     ) -> bool:
         """Record a safe error without exposing request or response contents."""
         if command and uncertain:
@@ -91,6 +107,12 @@ class TerneoThermostat:
                 ". Command outcome is unknown; refresh device state before retrying"
             )
         self._last_update_error = message
+        self._last_request_error = message
+        # A failed legacy verification can be wrapped as an uncertain command.
+        # Count that HTTP request once and preserve its original error category.
+        if self._last_request_error_category is None:
+            self._last_request_error_category = category
+            self._request_error_counts[category] += 1
         _LOGGER.debug("%s", message)
         return False
 
@@ -109,18 +131,42 @@ class TerneoThermostat:
         if delay > 0:
             time.sleep(delay)
 
+        self._request_count += 1
+        self._last_request_at = datetime.now(timezone.utc)
+        self._last_request_http_status = None
+        self._last_request_error = None
+        self._last_request_error_category = None
+        payload = request_kwargs.get("json", {})
+        self._last_request_kind = (
+            "restart" if endpoint == "test"
+            else "parameter_write" if "par" in payload
+            else "parameters" if payload.get("cmd") == CMD_GET_PARAMS
+            else "status" if payload.get("cmd") == CMD_GET_STATUS
+            else "other"
+        )
+        started = time.monotonic()
+        try:
+            return self._perform_post(endpoint, command=command, **request_kwargs)
+        finally:
+            self._last_request = time.monotonic()
+            self._last_request_duration = max(0.0, self._last_request - started)
+
+    def _perform_post(self, endpoint: str, *, command: bool, **request_kwargs) -> dict | bool:
+        """Perform and validate one HTTP exchange, without logging device payloads."""
         try:
             r = requests.post(
                 self._get_url(endpoint),
                 timeout=self._timeout,
                 **request_kwargs,
             )
+            self._last_request_http_status = r.status_code
             r.raise_for_status()
         except requests.RequestException as err:
-            self._last_request = time.monotonic()
             if isinstance(err, requests.Timeout):
                 message = "Thermostat request timed out"
+                category = "timeout"
             elif isinstance(err, requests.HTTPError):
+                category = "http"
                 status_code = getattr(err.response, "status_code", None)
                 message = (
                     f"Thermostat returned HTTP {status_code}"
@@ -129,15 +175,17 @@ class TerneoThermostat:
                 )
             else:
                 message = "Unable to communicate with thermostat"
-            return self._request_failed(message, command=command, uncertain=True)
-        
-        self._last_request = time.monotonic()
+                category = "transport"
+            return self._request_failed(
+                message, command=command, uncertain=True, category=category
+            )
         
         try:
             content = r.json()
         except ValueError:
             return self._request_failed(
-                "Failed to parse JSON response", command=command, uncertain=True
+                "Failed to parse JSON response", command=command, uncertain=True,
+                category="json",
             )
 
         if not isinstance(content, dict):
@@ -173,10 +221,16 @@ class TerneoThermostat:
         self._has_state = True
         self._consecutive_update_failures = 0
         self._last_update_error = None
+        self._last_successful_update = datetime.now(timezone.utc)
+        self._last_successful_update_monotonic = time.monotonic()
+        self._last_refresh_error = None
+        self._last_refresh_error_category = None
 
     def _mark_update_failed(self) -> None:
         """Track failed refreshes without flapping availability on one miss."""
         self._consecutive_update_failures += 1
+        self._last_refresh_error = self._last_update_error
+        self._last_refresh_error_category = self._last_request_error_category
         if self._consecutive_update_failures >= self._max_update_failures:
             self._available = False
         else:
@@ -282,9 +336,8 @@ class TerneoThermostat:
             for key in ("m.1", "f.0", "f.16"):
                 if key in result:
                     int(result[key])
-        except (TypeError, ValueError) as err:
-            self._last_update_error = f"Invalid status response: {err}"
-            return False
+        except (TypeError, ValueError):
+            return self._request_failed("Invalid status response")
         self._status = result
         return result
 
@@ -350,6 +403,62 @@ class TerneoThermostat:
     def last_update_error(self) -> str | None:
         """Return the last update error."""
         return self._last_update_error
+
+    @property
+    def last_successful_update(self) -> datetime | None:
+        """Return the UTC time of the last complete, validated refresh."""
+        return self._last_successful_update
+
+    @property
+    def cached_state_age(self) -> float | None:
+        """Return full-refresh age, unaffected by wall-clock changes or commands."""
+        if self._last_successful_update_monotonic is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_successful_update_monotonic)
+
+    @property
+    def consecutive_update_failures(self) -> int:
+        """Return consecutive failed full refreshes, not failed commands."""
+        return self._consecutive_update_failures
+
+    @property
+    def last_refresh_error_category(self) -> str | None:
+        """Return the last full-refresh error category until polling recovers."""
+        return self._last_refresh_error_category
+
+    @property
+    def last_request_duration(self) -> float | None:
+        """Return HTTP exchange duration in seconds, excluding rate-limit sleep."""
+        return self._last_request_duration
+
+    @property
+    def connection_diagnostics(self) -> dict[str, Any]:
+        """Return bounded connection metrics without raw device responses."""
+        return {
+            "available": self.available,
+            "has_state": self.has_state,
+            "last_successful_update": self.last_successful_update,
+            "cached_state_age_seconds": self.cached_state_age,
+            "consecutive_update_failures": self.consecutive_update_failures,
+            "max_update_failures": self._max_update_failures,
+            "last_refresh_error": self._last_refresh_error,
+            "last_refresh_error_category": self.last_refresh_error_category,
+            "request_count": self._request_count,
+            "request_error_counts": self._request_error_counts.copy(),
+            "last_request": {
+                "started_at": self._last_request_at,
+                "kind": self._last_request_kind,
+                "duration_seconds": self.last_request_duration,
+                "http_status": self._last_request_http_status,
+                "error": self._last_request_error,
+                "error_category": self._last_request_error_category,
+            },
+            "protocol": {
+                "profile": DEVICE_TYPE_NEW if self._is_new_version else DEVICE_TYPE_OLD,
+                "parameter_count": len(self._parameters),
+                "status_field_count": len(self._status),
+            },
+        }
 
     @property
     def is_new_version(self) -> bool:

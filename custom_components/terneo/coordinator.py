@@ -91,5 +91,23 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
                     _LOGGER.debug("Unable to refresh thermostat after a failed command")
             raise error
 
+    async def async_get_diagnostics(self) -> dict[str, Any]:
+        """Snapshot metrics after any active executor operation, without polling."""
+        async with self._request_lock:
+            return {
+                "coordinator": {
+                    "last_update_success": self.last_update_success,
+                    "last_exception_type": (
+                        type(self.last_exception).__name__
+                        if self.last_exception is not None else None
+                    ),
+                    "update_interval_seconds": (
+                        self.update_interval.total_seconds()
+                        if self.update_interval is not None else None
+                    ),
+                },
+                "connection": self.thermostat.connection_diagnostics,
+            }
+
 
 TerneoConfigEntry = ConfigEntry[TerneoCoordinator]

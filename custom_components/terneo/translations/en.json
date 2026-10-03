@@ -61,7 +61,18 @@
       "heating_energy": { "name": "Heating Energy" },
       "heating_time": { "name": "Heating Time" },
       "current_power": { "name": "Current Power" },
-      "heating_active": { "name": "Heating Active" }
+      "heating_active": { "name": "Heating Active" },
+      "last_successful_update": { "name": "Last Successful Update" },
+      "cached_state_age": { "name": "Cached State Age" },
+      "consecutive_update_failures": { "name": "Consecutive Update Failures" },
+      "last_request_duration": { "name": "Last Request Duration" },
+      "last_update_error": {
+        "name": "Last Update Error",
+        "state": {
+          "none": "None", "timeout": "Timeout", "transport": "Transport",
+          "http": "HTTP", "json": "JSON", "protocol": "Protocol"
+        }
+      }
     },
     "switch": {
       "power": { "name": "Power" },

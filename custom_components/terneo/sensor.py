@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 from homeassistant.components.sensor import (
@@ -13,6 +14,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import UnitOfTemperature, UnitOfPower, UnitOfTime, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -27,7 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 class TerneoSensorEntityDescription(SensorEntityDescription):
     """Describes Terneo sensor entity."""
     
-    value_fn: Callable[[TerneoThermostat], float | int | str | None]
+    value_fn: Callable[[TerneoThermostat], float | int | str | datetime | None]
     available_fn: Callable[[TerneoThermostat], bool] = lambda t: True
     new_version_only: bool = False
 
@@ -159,6 +161,53 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
 )
 
 
+CONNECTION_SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
+    TerneoSensorEntityDescription(
+        key="last_successful_update",
+        translation_key="last_successful_update",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda t: t.last_successful_update,
+    ),
+    TerneoSensorEntityDescription(
+        key="cached_state_age",
+        translation_key="cached_state_age",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda t: round(t.cached_state_age, 1) if t.cached_state_age is not None else None,
+    ),
+    TerneoSensorEntityDescription(
+        key="consecutive_update_failures",
+        translation_key="consecutive_update_failures",
+        icon="mdi:lan-disconnect",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda t: t.consecutive_update_failures,
+    ),
+    TerneoSensorEntityDescription(
+        key="last_request_duration",
+        translation_key="last_request_duration",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda t: round(t.last_request_duration, 3) if t.last_request_duration is not None else None,
+    ),
+    TerneoSensorEntityDescription(
+        key="last_update_error",
+        translation_key="last_update_error",
+        device_class=SensorDeviceClass.ENUM,
+        options=["none", "timeout", "transport", "http", "json", "protocol"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda t: t.last_refresh_error_category or "none",
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: TerneoConfigEntry,
@@ -169,7 +218,7 @@ async def async_setup_entry(
     thermostat = coordinator.thermostat
 
     entities = []
-    for description in SENSOR_DESCRIPTIONS:
+    for description in (*SENSOR_DESCRIPTIONS, *CONNECTION_SENSOR_DESCRIPTIONS):
         # Skip new version only sensors for old devices
         if description.new_version_only and not thermostat.is_new_version:
             continue
@@ -199,7 +248,10 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
         self.entity_description = description
         self._attr_entity_registry_enabled_default = (
             description.entity_registry_enabled_default
-            or entry.options.get("show_advanced_sensors", False)
+            or (
+                description.entity_category is not EntityCategory.DIAGNOSTIC
+                and entry.options.get("show_advanced_sensors", False)
+            )
         )
         
         self._attr_unique_id = f"{thermostat.sn}_{description.key}"
@@ -212,13 +264,15 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
         }
 
     @property
-    def native_value(self) -> float | int | str | None:
+    def native_value(self) -> float | int | str | datetime | None:
         """Return the sensor value."""
         return self.entity_description.value_fn(self._thermostat)
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if self.entity_description.entity_category is EntityCategory.DIAGNOSTIC:
+            return True
         if not super().available or not self._thermostat.available:
             return False
         return self.entity_description.available_fn(self._thermostat)

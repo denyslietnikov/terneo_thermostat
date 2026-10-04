@@ -1,19 +1,15 @@
 {
   "domain": "terneo",
-  "name": "Terneo/Welrok Thermostat",
-  "documentation": "https://github.com/denyslietnikov/terneo_thermostat",
-  "version": "1.0.5",
+  "name": "Terneo Thermostat",
   "codeowners": [
-    "@titovskiy",
-    "@Makave1i",
-    "@DevRedOWL"
+    "@denyslietnikov"
   ],
   "config_flow": true,
-  "iot_class": "local_polling",
-  "requirements": [
-    "requests==2.34.2"
-  ],
   "dependencies": [],
+  "documentation": "https://github.com/denyslietnikov/terneo_thermostat",
   "integration_type": "device",
-  "issue_tracker": "https://github.com/denyslietnikov/terneo_thermostat/issues"
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/denyslietnikov/terneo_thermostat/issues",
+  "requirements": [],
+  "version": "1.0.5"
 }

@@ -1,16 +1,17 @@
 """Select platform for Terneo/Welrok thermostat."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, ControlType, SENSOR_TYPES
+from .const import DOMAIN, MANUFACTURER, ControlType
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
@@ -32,8 +33,8 @@ CONTROL_TYPE_NAMES = {
 
 # Sensor type mappings
 SENSOR_TYPE_OPTIONS = {
-    "4.7k": 0,
-    "6.8k": 1,
+    "4_7k": 0,
+    "6_8k": 1,
     "10k": 2,
     "12k": 3,
     "15k": 4,
@@ -42,8 +43,8 @@ SENSOR_TYPE_OPTIONS = {
 }
 
 SENSOR_TYPE_NAMES = {
-    0: "4.7k",
-    1: "6.8k",
+    0: "4_7k",
+    1: "6_8k",
     2: "10k",
     3: "12k",
     4: "15k",
@@ -55,7 +56,7 @@ SENSOR_TYPE_NAMES = {
 @dataclass(frozen=True, kw_only=True)
 class TerneoSelectEntityDescription(SelectEntityDescription):
     """Describes Terneo select entity."""
-    
+
     value_fn: Callable[[TerneoThermostat], str | None]
     set_fn: Callable[[TerneoThermostat, str], bool]
     options_fn: Callable[[TerneoThermostat], list[str]]
@@ -99,7 +100,7 @@ def set_sensor_type_value(thermostat: TerneoThermostat, value: str) -> bool:
 
 def get_sensor_type_options(thermostat: TerneoThermostat) -> list[str]:
     """Get available sensor type options."""
-    return ["4.7k", "6.8k", "10k", "12k", "15k", "33k", "47k"]
+    return list(SENSOR_TYPE_OPTIONS)
 
 
 SELECT_DESCRIPTIONS: tuple[TerneoSelectEntityDescription, ...] = (
@@ -140,7 +141,7 @@ async def async_setup_entry(
         # Skip new version only selects for old devices
         if description.new_version_only and not thermostat.is_new_version:
             continue
-        
+
         entities.append(TerneoSelectEntity(coordinator, thermostat, entry, description))
 
     async_add_entities(entities)
@@ -164,7 +165,7 @@ class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
         self._thermostat = thermostat
         self._entry = entry
         self.entity_description = description
-        
+
         self._attr_unique_id = f"{thermostat.sn}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, thermostat.sn)},
@@ -173,7 +174,7 @@ class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
             "model": "OZ" if thermostat.is_new_version else "OZ (Legacy)",
             "serial_number": thermostat.sn,
         }
-        
+
         # Set options dynamically
         self._attr_options = description.options_fn(thermostat)
 
@@ -186,7 +187,8 @@ class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         return (
-            super().available and self._thermostat.available
+            super().available
+            and self._thermostat.available
             and self._thermostat.settings_available
         )
 

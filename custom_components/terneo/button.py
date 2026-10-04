@@ -1,4 +1,5 @@
 """Button platform for Terneo/Welrok thermostat."""
+
 from __future__ import annotations
 
 import logging
@@ -45,7 +46,7 @@ class TerneoRestartButton(CoordinatorEntity[TerneoCoordinator], ButtonEntity):
         super().__init__(coordinator)
         self._thermostat = thermostat
         self._entry = entry
-        
+
         self._attr_unique_id = f"{thermostat.sn}_restart"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, thermostat.sn)},

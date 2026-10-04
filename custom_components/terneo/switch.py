@@ -1,9 +1,11 @@
 """Switch platform for Terneo/Welrok thermostat."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from homeassistant.components.switch import (
     SwitchDeviceClass,
@@ -24,7 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True, kw_only=True)
 class TerneoSwitchEntityDescription(SwitchEntityDescription):
     """Describes Terneo switch entity."""
-    
+
     value_fn: Callable[[TerneoThermostat], bool | None]
     turn_on_fn: Callable[[TerneoThermostat], bool]
     turn_off_fn: Callable[[TerneoThermostat], bool]
@@ -134,7 +136,7 @@ async def async_setup_entry(
         # Skip new version only switches for old devices
         if description.new_version_only and not thermostat.is_new_version:
             continue
-        
+
         entities.append(TerneoSwitchEntity(coordinator, thermostat, entry, description))
 
     async_add_entities(entities)
@@ -158,7 +160,7 @@ class TerneoSwitchEntity(CoordinatorEntity[TerneoCoordinator], SwitchEntity):
         self._thermostat = thermostat
         self._entry = entry
         self.entity_description = description
-        
+
         self._attr_unique_id = f"{thermostat.sn}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, thermostat.sn)},
@@ -177,7 +179,8 @@ class TerneoSwitchEntity(CoordinatorEntity[TerneoCoordinator], SwitchEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         return (
-            super().available and self._thermostat.available
+            super().available
+            and self._thermostat.available
             and (
                 self._thermostat.settings_available
                 or self.entity_description.key == "power"

@@ -1,4 +1,5 @@
 """Climate platform for Terneo/Welrok thermostat."""
+
 from __future__ import annotations
 
 import logging
@@ -69,7 +70,7 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         super().__init__(coordinator)
         self._thermostat = thermostat
         self._entry = entry
-        
+
         self._attr_unique_id = f"{thermostat.sn}_climate"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, thermostat.sn)},
@@ -98,11 +99,11 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
     def min_temp(self) -> float:
         """Return the minimum temperature."""
         control_type = self._thermostat.control_type or ControlType.FLOOR
-        
+
         if self._thermostat.is_new_version and control_type != ControlType.FLOOR:
             limit = self._thermostat.lower_air_limit
             return float(limit) if limit is not None else 5.0
-        
+
         limit = self._thermostat.lower_limit
         return float(limit) if limit is not None else 5.0
 
@@ -110,11 +111,11 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
     def max_temp(self) -> float:
         """Return the maximum temperature."""
         control_type = self._thermostat.control_type or ControlType.FLOOR
-        
+
         if self._thermostat.is_new_version and control_type != ControlType.FLOOR:
             limit = self._thermostat.upper_air_limit
             return float(limit) if limit is not None else 35.0
-        
+
         limit = self._thermostat.upper_limit
         return float(limit) if limit is not None else 45.0
 
@@ -122,18 +123,18 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
     def hvac_mode(self) -> HVACMode:
         """Return current HVAC mode."""
         mode = self._thermostat.mode
-        
+
         if mode == -1 or not self._thermostat.power_on:
             return HVACMode.OFF
-        
+
         # Check if in cooling mode
         if self._thermostat.cooling_mode:
             return HVACMode.COOL
-        
+
         # Schedule mode = AUTO, Manual mode = HEAT
         if mode == OperationMode.SCHEDULE:
             return HVACMode.AUTO
-        
+
         return HVACMode.HEAT
 
     @property
@@ -141,19 +142,19 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         """Return current HVAC action."""
         if not self._thermostat.power_on or self._thermostat.mode == -1:
             return HVACAction.OFF
-        
+
         if self._thermostat.relay_state:
             if self._thermostat.cooling_mode:
                 return HVACAction.COOLING
             return HVACAction.HEATING
-        
+
         return HVACAction.IDLE
 
     @property
     def preset_mode(self) -> str | None:
         """Return current preset mode."""
         mode = self._thermostat.mode
-        
+
         if mode == OperationMode.SCHEDULE:
             return PRESET_SCHEDULE
         return PRESET_MANUAL
@@ -169,16 +170,22 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
             "floor_temperature": self._thermostat.floor_temperature,
             "settings_confirmed": self._thermostat.settings_available,
         }
-        
+
         if self._thermostat.is_new_version:
             attrs["air_temperature"] = self._thermostat.air_temperature
-        
-        if self._thermostat.settings_available and self._thermostat.hysteresis is not None:
+
+        if (
+            self._thermostat.settings_available
+            and self._thermostat.hysteresis is not None
+        ):
             attrs["hysteresis"] = self._thermostat.hysteresis
-        
-        if self._thermostat.settings_available and self._thermostat.power_watts is not None:
+
+        if (
+            self._thermostat.settings_available
+            and self._thermostat.power_watts is not None
+        ):
             attrs["power_watts"] = self._thermostat.power_watts
-        
+
         return attrs
 
     def _get_control_type_name(self) -> str:
@@ -196,7 +203,7 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         """Set new target temperature."""
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
-        
+
         await self.coordinator.async_execute_command(
             self._thermostat.set_setpoint, temperature
         )
@@ -223,7 +230,7 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
             )
         else:
             raise ServiceValidationError(f"Unsupported preset: {preset_mode}")
-        
+
         await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:

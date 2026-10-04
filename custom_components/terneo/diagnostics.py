@@ -1,9 +1,10 @@
 """Privacy-safe, read-only diagnostics for Terneo config entries."""
+
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime
-import re
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -13,12 +14,39 @@ from homeassistant.core import HomeAssistant
 from .coordinator import TerneoConfigEntry
 
 _SENSITIVE_KEYS = {
-    "host", "hostname", "ip", "ip_address", "serial", "serial_number", "sn",
-    "unique_id", "entry_id", "device_id", "mac", "mac_address", "name", "title",
-    "url", "base_url", "username", "password", "token", "access_token",
-    "refresh_token", "api_key", "authorization", "ssid", "bssid",
-    "auth", "key", "address", "device_name", "friendly_name", "location",
-    "latitude", "longitude",
+    "host",
+    "hostname",
+    "ip",
+    "ip_address",
+    "serial",
+    "serial_number",
+    "sn",
+    "unique_id",
+    "entry_id",
+    "device_id",
+    "mac",
+    "mac_address",
+    "name",
+    "title",
+    "url",
+    "base_url",
+    "username",
+    "password",
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "authorization",
+    "ssid",
+    "bssid",
+    "auth",
+    "key",
+    "address",
+    "device_name",
+    "friendly_name",
+    "location",
+    "latitude",
+    "longitude",
 }
 _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+", re.IGNORECASE)
 
@@ -42,7 +70,9 @@ def _redact_diagnostics(data: Any, identifiers: list[str]) -> Any:
         elif isinstance(value, (list, tuple)):
             for item in value:
                 collect(item, sensitive)
-        elif sensitive and isinstance(value, (str, int)) and not isinstance(value, bool):
+        elif (
+            sensitive and isinstance(value, (str, int)) and not isinstance(value, bool)
+        ):
             if str(value):
                 values.add(str(value))
 
@@ -50,10 +80,12 @@ def _redact_diagnostics(data: Any, identifiers: list[str]) -> Any:
     # Encoded credentials/identifiers may occur in URLs or exception messages.
     replacements = sorted(
         {
-            encoded for value in values
+            encoded
+            for value in values
             for encoded in (value, quote(value, safe=""), quote_plus(value))
         },
-        key=len, reverse=True,
+        key=len,
+        reverse=True,
     )
 
     def scrub(value: Any) -> Any:
@@ -92,12 +124,15 @@ async def async_get_config_entry_diagnostics(
     if coordinator is not None:
         identifiers.append(coordinator.thermostat.sn)
         runtime = await coordinator.async_get_diagnostics()
-    return _redact_diagnostics({
-        "entry": {
-            "title": entry.title,
-            "unique_id": entry.unique_id,
-            "data": dict(entry.data),
-            "options": dict(entry.options),
+    return _redact_diagnostics(
+        {
+            "entry": {
+                "title": entry.title,
+                "unique_id": entry.unique_id,
+                "data": dict(entry.data),
+                "options": dict(entry.options),
+            },
+            "runtime": runtime,
         },
-        "runtime": runtime,
-    }, identifiers)
+        identifiers,
+    )

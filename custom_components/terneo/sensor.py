@@ -1,10 +1,11 @@
 """Sensor platform for Terneo/Welrok thermostat."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -12,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature, UnitOfPower, UnitOfTime, UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -28,7 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True, kw_only=True)
 class TerneoSensorEntityDescription(SensorEntityDescription):
     """Describes Terneo sensor entity."""
-    
+
     value_fn: Callable[[TerneoThermostat], float | int | str | datetime | None]
     available_fn: Callable[[TerneoThermostat], bool] = lambda t: True
     new_version_only: bool = False
@@ -183,7 +184,9 @@ CONNECTION_SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda t: round(t.cached_state_age, 1) if t.cached_state_age is not None else None,
+        value_fn=lambda t: (
+            round(t.cached_state_age, 1) if t.cached_state_age is not None else None
+        ),
     ),
     TerneoSensorEntityDescription(
         key="consecutive_update_failures",
@@ -200,7 +203,11 @@ CONNECTION_SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda t: round(t.last_request_duration, 3) if t.last_request_duration is not None else None,
+        value_fn=lambda t: (
+            round(t.last_request_duration, 3)
+            if t.last_request_duration is not None
+            else None
+        ),
     ),
     TerneoSensorEntityDescription(
         key="last_update_error",
@@ -228,7 +235,7 @@ async def async_setup_entry(
         # Skip new version only sensors for old devices
         if description.new_version_only and not thermostat.is_new_version:
             continue
-        
+
         entities.append(TerneoSensorEntity(coordinator, thermostat, entry, description))
 
     async_add_entities(entities)
@@ -259,7 +266,7 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
                 and entry.options.get("show_advanced_sensors", False)
             )
         )
-        
+
         self._attr_unique_id = f"{thermostat.sn}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, thermostat.sn)},
@@ -281,7 +288,10 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
             return True
         if not super().available or not self._thermostat.available:
             return False
-        if self.entity_description.requires_settings and not self._thermostat.settings_available:
+        if (
+            self.entity_description.requires_settings
+            and not self._thermostat.settings_available
+        ):
             return False
         return self.entity_description.available_fn(self._thermostat)
 

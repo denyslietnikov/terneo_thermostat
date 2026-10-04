@@ -3,6 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
 
 Custom integration for controlling Terneo thermostats over the local network.
+Supported Home Assistant version: **2026.9.4**.
 
 ## Supported Devices
 
@@ -46,6 +47,9 @@ Options: status interval (default 30 seconds), settings interval (default 5 minu
 request timeout (default 5 seconds), and advanced sensors. Diagnostic sensors are
 disabled by default; enable them individually in their entity settings.
 
+To change the IP address, select **Reconfigure** in the integration entry's menu.
+The new address must belong to the same thermostat; entities and settings are retained.
+
 ## Actions
 
 - `terneo.set_floor_limits`: set minimum/maximum floor temperatures.
@@ -72,5 +76,5 @@ results, and the improvement roadmap are in [PLAN.md](PLAN.md).
 
 ## License and Credits
 
-MIT. Based on work by [@Makave1i](https://github.com/Makave1i),
+[MIT](LICENSE). Based on work by [@Makave1i](https://github.com/Makave1i),
 [@DevRedOWL](https://github.com/DevRedOWL), and [@titovskiy](https://github.com/titovskiy).

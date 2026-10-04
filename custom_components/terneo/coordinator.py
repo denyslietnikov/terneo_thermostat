@@ -1,18 +1,23 @@
 """Coordinate polling and commands for one Terneo thermostat."""
+
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from hashlib import sha256
-import logging
-import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryError, HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryError,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -50,8 +55,11 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         self._force_full_refresh = True
         identity = sha256(thermostat.sn.encode()).hexdigest()
         self._energy_store: Store[dict[str, float]] = Store(
-            hass, ENERGY_STORAGE_VERSION, f"{DOMAIN}.energy.{identity}",
-            private=True, atomic_writes=True,
+            hass,
+            ENERGY_STORAGE_VERSION,
+            f"{DOMAIN}.energy.{identity}",
+            private=True,
+            atomic_writes=True,
         )
         self._energy_restored = False
         self._energy_shutdown_complete = False
@@ -75,7 +83,8 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
     def async_start_energy_persistence(self) -> None:
         """Bound disk writes independently of poll frequency, including idle periods."""
         if (
-            not self._energy_restored or self._energy_shutdown_complete
+            not self._energy_restored
+            or self._energy_shutdown_complete
             or self._unsub_energy_save is not None
         ):
             return
@@ -117,7 +126,9 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         self, command: Callable[..., Any], *args: Any
     ) -> Any:
         """Keep the caller's lock until executor work finishes, even on cancellation."""
-        request = asyncio.ensure_future(self.hass.async_add_executor_job(command, *args))
+        request = asyncio.ensure_future(
+            self.hass.async_add_executor_job(command, *args)
+        )
         cancelled = False
         while True:
             try:
@@ -141,11 +152,14 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
             try:
                 fast_poll_supported = self.thermostat.fast_poll_supported
                 full_refresh = (
-                    self._force_full_refresh or not self.thermostat.has_state
-                    or not fast_poll_supported or not self.last_update_success
+                    self._force_full_refresh
+                    or not self.thermostat.has_state
+                    or not fast_poll_supported
+                    or not self.last_update_success
                     or self.thermostat.consecutive_update_failures > 0
                     or self._last_settings_attempt is None
-                    or time.monotonic() - self._last_settings_attempt >= self._settings_interval
+                    or time.monotonic() - self._last_settings_attempt
+                    >= self._settings_interval
                 )
                 if full_refresh:
                     self._force_full_refresh = False
@@ -155,7 +169,9 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
                         self.thermostat.update, fast_poll_supported
                     )
                 else:
-                    success = await self._async_execute_request(self.thermostat.update_status)
+                    success = await self._async_execute_request(
+                        self.thermostat.update_status
+                    )
             except Exception:
                 self._force_full_refresh = True
                 self.thermostat.break_heating_interval()
@@ -199,11 +215,13 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
                     "last_update_success": self.last_update_success,
                     "last_exception_type": (
                         type(self.last_exception).__name__
-                        if self.last_exception is not None else None
+                        if self.last_exception is not None
+                        else None
                     ),
                     "update_interval_seconds": (
                         self.update_interval.total_seconds()
-                        if self.update_interval is not None else None
+                        if self.update_interval is not None
+                        else None
                     ),
                     "settings_interval_seconds": self._settings_interval,
                     "full_refresh_pending": self._force_full_refresh,

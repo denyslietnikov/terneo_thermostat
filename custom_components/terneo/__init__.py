@@ -1,15 +1,17 @@
 """The Terneo/Welrok thermostat integration."""
+
 from __future__ import annotations
 
 from typing import cast
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import config_validation as cv, entity_registry as er, service
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import target as target_helpers
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -23,10 +25,7 @@ from .const import (
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
 from .thermostat import TerneoThermostat
 
-try:
-    from homeassistant.helpers import target as target_helpers
-except ImportError:  # Home Assistant before the target helper was split out.
-    target_helpers = None
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS = [
     Platform.CLIMATE,
@@ -57,14 +56,12 @@ SERVICE_AIR_LIMITS_SCHEMA = cv.make_entity_service_schema(
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register actions even when the thermostat is offline."""
+
     async def selected_coordinators(call: ServiceCall) -> list[TerneoCoordinator]:
         registry = er.async_get(hass)
-        if target_helpers is None:
-            selected = service.async_extract_referenced_entity_ids(hass, call)
-        else:
-            selected = target_helpers.async_extract_referenced_entity_ids(
-                hass, target_helpers.TargetSelection(call.data)
-            )
+        selected = target_helpers.async_extract_referenced_entity_ids(
+            hass, target_helpers.TargetSelection(call.data)
+        )
         coordinators: dict[str, TerneoCoordinator] = {}
         for entity_id in selected.referenced | selected.indirectly_referenced:
             entity = registry.async_get(entity_id)
@@ -93,7 +90,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         coordinators = await selected_coordinators(call)
         air = call.service == SERVICE_SET_AIR_LIMITS
         if air and any(not c.thermostat.is_new_version for c in coordinators):
-            raise ServiceValidationError("Air limits require a thermostat with an air sensor")
+            raise ServiceValidationError(
+                "Air limits require a thermostat with an air sensor"
+            )
         for coordinator in coordinators:
             method = (
                 coordinator.thermostat.set_air_limits
@@ -108,15 +107,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             await coordinator.async_execute_command(coordinator.thermostat.restart)
 
     hass.services.async_register(
-        DOMAIN, SERVICE_SET_FLOOR_LIMITS, handle_limits,
+        DOMAIN,
+        SERVICE_SET_FLOOR_LIMITS,
+        handle_limits,
         schema=SERVICE_FLOOR_LIMITS_SCHEMA,
     )
     hass.services.async_register(
-        DOMAIN, SERVICE_SET_AIR_LIMITS, handle_limits,
+        DOMAIN,
+        SERVICE_SET_AIR_LIMITS,
+        handle_limits,
         schema=SERVICE_AIR_LIMITS_SCHEMA,
     )
     hass.services.async_register(
-        DOMAIN, SERVICE_RESTART, handle_restart,
+        DOMAIN,
+        SERVICE_RESTART,
+        handle_restart,
         schema=cv.make_entity_service_schema({}),
     )
     return True

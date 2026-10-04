@@ -1,18 +1,22 @@
 """HVAC transition tests without physical device communication."""
+
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 # Initialize HA's validation compatibility before importing the integration.
 import homeassistant  # noqa: F401
 import requests
 
-from custom_components.terneo.const import DEVICE_TYPE_NEW, DEVICE_TYPE_OLD, OperationMode
+from custom_components.terneo.const import (
+    DEVICE_TYPE_NEW,
+    DEVICE_TYPE_OLD,
+    OperationMode,
+)
 from custom_components.terneo.thermostat import TerneoThermostat
-
 
 MODE_PARAMETERS = {
     "off": [[125, 7, "1"]],
@@ -31,8 +35,11 @@ def response(payload):
 
 def snapshot(thermostat):
     return (
-        thermostat.power_on, thermostat.mode, thermostat.cooling_mode,
-        thermostat.setpoint, deepcopy(thermostat._parameters),
+        thermostat.power_on,
+        thermostat.mode,
+        thermostat.cooling_mode,
+        thermostat.setpoint,
+        deepcopy(thermostat._parameters),
         deepcopy(thermostat._status),
     )
 
@@ -51,7 +58,14 @@ class HvacTransitionTests(unittest.TestCase):
         thermostat._parameters = {
             125: (7, "1" if source == "off" else "0"),
             118: (7, "1" if source == "cool" else "0"),
-            2: (2, "0" if source == "auto" else "1" if device_type == DEVICE_TYPE_OLD else "3"),
+            2: (
+                2,
+                "0"
+                if source == "auto"
+                else "1"
+                if device_type == DEVICE_TYPE_OLD
+                else "3",
+            ),
         }
         thermostat._status = {"t.5": "400"}
         return thermostat
@@ -60,19 +74,30 @@ class HvacTransitionTests(unittest.TestCase):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             for source in MODE_PARAMETERS:
                 for target, params in MODE_PARAMETERS.items():
-                    with self.subTest(device_type=device_type, source=source, target=target):
+                    with self.subTest(
+                        device_type=device_type, source=source, target=target
+                    ):
                         params = deepcopy(params)
-                        if device_type == DEVICE_TYPE_NEW and target in ("heat", "cool"):
+                        if device_type == DEVICE_TYPE_NEW and target in (
+                            "heat",
+                            "cool",
+                        ):
                             params[-1][2] = "3"
                         thermostat = self.thermostat(device_type, source)
                         previous = snapshot(thermostat)
                         acknowledgement = {"sn": thermostat.sn, "par": params}
-                        with patch("requests.post", return_value=response(acknowledgement)) as post:
+                        with patch(
+                            "requests.post", return_value=response(acknowledgement)
+                        ) as post:
                             self.assertTrue(thermostat.set_hvac_mode(target))
                         post.assert_called_once()
-                        self.assertEqual(post.call_args.kwargs["json"], {
-                            "sn": thermostat.sn, "par": params,
-                        })
+                        self.assertEqual(
+                            post.call_args.kwargs["json"],
+                            {
+                                "sn": thermostat.sn,
+                                "par": params,
+                            },
+                        )
                         self.assertEqual(snapshot(thermostat), previous)
 
     def test_failed_batches_do_not_publish_partially_confirmed_state(self):
@@ -84,8 +109,14 @@ class HvacTransitionTests(unittest.TestCase):
                 {"success": "block"},
                 {"status": "error"},
                 {"sn": thermostat.sn, "par": [[125, 7, "0"]]},
-                {"sn": thermostat.sn, "par": [[125, 7, "0"], [118, 7, "1"], [2, 2, manual]]},
-                {"sn": thermostat.sn, "par": [[125, 7, "0"], [118, 7, "0"], [2, 2, "0"]]},
+                {
+                    "sn": thermostat.sn,
+                    "par": [[125, 7, "0"], [118, 7, "1"], [2, 2, manual]],
+                },
+                {
+                    "sn": thermostat.sn,
+                    "par": [[125, 7, "0"], [118, 7, "0"], [2, 2, "0"]],
+                },
             ):
                 with self.subTest(device_type=device_type, payload=payload):
                     with patch("requests.post", return_value=response(payload)) as post:
@@ -108,13 +139,22 @@ class HvacTransitionTests(unittest.TestCase):
     def test_presets_retain_power_mode_batch_without_changing_cooling(self):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             manual = "1" if device_type == DEVICE_TYPE_OLD else "3"
-            for mode, api_value in ((OperationMode.SCHEDULE, "0"), (OperationMode.MANUAL, manual)):
+            for mode, api_value in (
+                (OperationMode.SCHEDULE, "0"),
+                (OperationMode.MANUAL, manual),
+            ):
                 with self.subTest(device_type=device_type, mode=mode):
                     thermostat = self.thermostat(device_type, "cool")
                     params = [[125, 7, "0"], [2, 2, api_value]]
-                    with patch("requests.post", return_value=response({
-                        "sn": thermostat.sn, "par": params,
-                    })) as post:
+                    with patch(
+                        "requests.post",
+                        return_value=response(
+                            {
+                                "sn": thermostat.sn,
+                                "par": params,
+                            }
+                        ),
+                    ) as post:
                         self.assertTrue(thermostat.set_mode(mode))
                     post.assert_called_once()
                     self.assertEqual(post.call_args.kwargs["json"]["par"], params)
@@ -125,16 +165,37 @@ class HvacTransitionTests(unittest.TestCase):
         # Sanitized values observed on Terneo AX firmware 2.24.1.Y.20.2.20.12.43.
         for power_off in ("0", "1"):
             with self.subTest(power_off=power_off):
-                with patch("requests.post", side_effect=[
-                    response({"sn": thermostat.sn, "par": [
-                        [2, 2, "1"], [125, 7, power_off], [118, 7, "0"], [5, 1, "16"],
-                    ]}),
-                    response({"sn": thermostat.sn, "m.1": "3", "f.16": power_off,
-                              "f.0": "0", "t.1": "341", "t.5": "256"}),
-                ]):
+                with patch(
+                    "requests.post",
+                    side_effect=[
+                        response(
+                            {
+                                "sn": thermostat.sn,
+                                "par": [
+                                    [2, 2, "1"],
+                                    [125, 7, power_off],
+                                    [118, 7, "0"],
+                                    [5, 1, "16"],
+                                ],
+                            }
+                        ),
+                        response(
+                            {
+                                "sn": thermostat.sn,
+                                "m.1": "3",
+                                "f.16": power_off,
+                                "f.0": "0",
+                                "t.1": "341",
+                                "t.5": "256",
+                            }
+                        ),
+                    ],
+                ):
                     self.assertTrue(thermostat.update())
                 self.assertEqual(thermostat._parameters[2], (2, "1"))
-                self.assertEqual(thermostat.mode, -1 if power_off == "1" else OperationMode.MANUAL)
+                self.assertEqual(
+                    thermostat.mode, -1 if power_off == "1" else OperationMode.MANUAL
+                )
                 self.assertEqual(thermostat.setpoint, 16)
 
     def test_all_legacy_manual_commands_write_one_not_telemetry_three(self):
@@ -146,9 +207,15 @@ class HvacTransitionTests(unittest.TestCase):
         ):
             with self.subTest(command=command, args=args):
                 thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
-                with patch("requests.post", return_value=response({
-                    "sn": thermostat.sn, "par": params,
-                })) as post:
+                with patch(
+                    "requests.post",
+                    return_value=response(
+                        {
+                            "sn": thermostat.sn,
+                            "par": params,
+                        }
+                    ),
+                ) as post:
                     self.assertTrue(getattr(thermostat, command)(*args))
                 post.assert_called_once()
                 self.assertEqual(post.call_args.kwargs["json"]["par"], params)
@@ -156,16 +223,26 @@ class HvacTransitionTests(unittest.TestCase):
     def test_telemetry_code_cannot_acknowledge_legacy_manual_write(self):
         thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
         for command, args in (
-            ("set_hvac_mode", ("heat",)), ("set_mode", (OperationMode.MANUAL,)),
+            ("set_hvac_mode", ("heat",)),
+            ("set_mode", (OperationMode.MANUAL,)),
             ("set_setpoint", (27,)),
         ):
             with self.subTest(command=command):
                 previous = snapshot(thermostat)
-                with patch("requests.post", return_value=response({
-                    "sn": thermostat.sn, "par": [
-                        [125, 7, "0"], [118, 7, "0"], [2, 2, "3"], [5, 1, "27"],
-                    ],
-                })):
+                with patch(
+                    "requests.post",
+                    return_value=response(
+                        {
+                            "sn": thermostat.sn,
+                            "par": [
+                                [125, 7, "0"],
+                                [118, 7, "0"],
+                                [2, 2, "3"],
+                                [5, 1, "27"],
+                            ],
+                        }
+                    ),
+                ):
                     self.assertFalse(getattr(thermostat, command)(*args))
                 self.assertEqual(snapshot(thermostat), previous)
 
@@ -181,7 +258,11 @@ class HvacTransitionTests(unittest.TestCase):
             ("set_prop_koef", (15,), [[25, 2, "15"]]),
             ("set_floor_limits", (5, 45), [[27, 1, "5"], [26, 1, "45"]]),
             ("set_away_temperature", (5,), [[7, 1, "5"]]),
-            ("set_night_brightness_time", (1320, 480), [[52, 4, "1320"], [53, 4, "480"]]),
+            (
+                "set_night_brightness_time",
+                (1320, 480),
+                [[52, 4, "1320"], [53, 4, "480"]],
+            ),
             ("set_lan_block", (False,), [[114, 7, "0"]]),
             ("set_cloud_block", (True,), [[115, 7, "1"]]),
             ("set_nc_contact_control", (False,), [[117, 7, "0"]]),
@@ -192,11 +273,21 @@ class HvacTransitionTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
-                with patch("requests.post", return_value=response({
-                    "sn": thermostat.sn, "par": params,
-                })) as post:
+                with patch(
+                    "requests.post",
+                    return_value=response(
+                        {
+                            "sn": thermostat.sn,
+                            "par": params,
+                        }
+                    ),
+                ) as post:
                     self.assertTrue(getattr(thermostat, command)(*args))
                 post.assert_called_once()
-                self.assertEqual(post.call_args.kwargs["json"], {
-                    "sn": thermostat.sn, "par": params,
-                })
+                self.assertEqual(
+                    post.call_args.kwargs["json"],
+                    {
+                        "sn": thermostat.sn,
+                        "par": params,
+                    },
+                )

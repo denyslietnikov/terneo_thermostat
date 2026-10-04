@@ -1,23 +1,24 @@
 """Terneo/Welrok Thermostat API client."""
+
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
 
 from .const import (
-    ParamNum,
-    ControlType,
-    OperationMode,
-    DataType,
-    DEVICE_TYPE_OLD,
-    DEVICE_TYPE_NEW,
     CMD_GET_PARAMS,
     CMD_GET_STATUS,
     DEFAULT_MAX_UPDATE_FAILURES,
     DEFAULT_TIMEOUT,
+    DEVICE_TYPE_NEW,
+    DEVICE_TYPE_OLD,
+    ControlType,
+    DataType,
+    OperationMode,
+    ParamNum,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,9 +27,9 @@ _LOGGER = logging.getLogger(__name__)
 class TerneoThermostat:
     """
     A class for interacting with the Terneo/Welrok Thermostat's HTTP API.
-    
+
     Supports both old (before June 2025) and new (from June 2025) versions.
-    
+
     Parameters
     ----------
     serial_number : str
@@ -57,10 +58,10 @@ class TerneoThermostat:
         self._timeout = timeout
         self._max_update_failures = max_update_failures
         self._max_heating_interval = max_heating_interval
-        
+
         self._base_url = f"http://{host}/{{endpoint}}.cgi"
         self._last_request = time.monotonic()
-        
+
         # Cached state
         self._available = False
         self._parameters: dict[int, Any] = {}
@@ -89,7 +90,7 @@ class TerneoThermostat:
         self._last_request_http_status: int | None = None
         self._last_request_error: str | None = None
         self._last_request_error_category: str | None = None
-        
+
         # Derived state
         self._setpoint: float | None = None
         self._floor_temperature: float | None = None
@@ -97,19 +98,23 @@ class TerneoThermostat:
         self._mode: int | None = None
         self._relay_state: bool | None = None
         self._power_on: bool | None = None
-        
+
         # Energy tracking
         self._last_relay_update: float | None = None
         self._last_relay_power_watts: int | None = None
         self._heating_energy_kwh: float = 0.0  # Accumulated energy in kWh
         self._heating_time_seconds: float = 0.0  # Accumulated heating time in seconds
-        
+
     def _get_url(self, endpoint: str) -> str:
         """Get the full URL for an endpoint."""
         return self._base_url.format(endpoint=endpoint)
 
     def _request_failed(
-        self, message: str, *, command: bool = False, uncertain: bool = False,
+        self,
+        message: str,
+        *,
+        command: bool = False,
+        uncertain: bool = False,
         category: str = "protocol",
     ) -> bool:
         """Record a safe error without exposing request or response contents."""
@@ -143,16 +148,20 @@ class TerneoThermostat:
             time.sleep(delay)
 
         self._request_count += 1
-        self._last_request_at = datetime.now(timezone.utc)
+        self._last_request_at = datetime.now(UTC)
         self._last_request_http_status = None
         self._last_request_error = None
         self._last_request_error_category = None
         payload = request_kwargs.get("json", {})
         self._last_request_kind = (
-            "restart" if endpoint == "test"
-            else "parameter_write" if "par" in payload
-            else "parameters" if payload.get("cmd") == CMD_GET_PARAMS
-            else "status" if payload.get("cmd") == CMD_GET_STATUS
+            "restart"
+            if endpoint == "test"
+            else "parameter_write"
+            if "par" in payload
+            else "parameters"
+            if payload.get("cmd") == CMD_GET_PARAMS
+            else "status"
+            if payload.get("cmd") == CMD_GET_STATUS
             else "other"
         )
         started = time.monotonic()
@@ -162,7 +171,9 @@ class TerneoThermostat:
             self._last_request = time.monotonic()
             self._last_request_duration = max(0.0, self._last_request - started)
 
-    def _perform_post(self, endpoint: str, *, command: bool, **request_kwargs) -> dict | bool:
+    def _perform_post(
+        self, endpoint: str, *, command: bool, **request_kwargs
+    ) -> dict | bool:
         """Perform and validate one HTTP exchange, without logging device payloads."""
         try:
             r = requests.post(
@@ -190,26 +201,31 @@ class TerneoThermostat:
             return self._request_failed(
                 message, command=command, uncertain=True, category=category
             )
-        
+
         try:
             content = r.json()
         except ValueError:
             return self._request_failed(
-                "Failed to parse JSON response", command=command, uncertain=True,
+                "Failed to parse JSON response",
+                command=command,
+                uncertain=True,
                 category="json",
             )
 
         if not isinstance(content, dict):
             return self._request_failed(
                 "Expected a JSON object from thermostat",
-                command=command, uncertain=True,
+                command=command,
+                uncertain=True,
             )
         if "sn" in content and content["sn"] != self.sn:
             return self._request_failed(
                 "Thermostat serial number mismatch", command=command, uncertain=True
             )
         if content.get("success") == "block":
-            return self._request_failed("Thermostat rejected request: LAN control is blocked")
+            return self._request_failed(
+                "Thermostat rejected request: LAN control is blocked"
+            )
         if "error" in content or (
             "success" in content and content["success"] != "true"
         ):
@@ -223,7 +239,7 @@ class TerneoThermostat:
                 else "Thermostat returned an unexpected status"
             )
             return self._request_failed(message, command=command, uncertain=True)
-        
+
         return content
 
     def _mark_update_successful(self) -> None:
@@ -232,9 +248,9 @@ class TerneoThermostat:
         self._settings_available = True
         self._last_settings_error = None
         self._last_settings_error_category = None
-        self._last_successful_settings_update = datetime.now(timezone.utc)
+        self._last_successful_settings_update = datetime.now(UTC)
         self._last_successful_settings_monotonic = time.monotonic()
-        self._last_successful_update = datetime.now(timezone.utc)
+        self._last_successful_update = datetime.now(UTC)
         self._last_successful_update_monotonic = time.monotonic()
         self._last_refresh_error = None
         self._last_refresh_error_category = None
@@ -245,7 +261,7 @@ class TerneoThermostat:
         self._has_state = True
         self._consecutive_update_failures = 0
         self._last_update_error = None
-        self._last_successful_status_update = datetime.now(timezone.utc)
+        self._last_successful_status_update = datetime.now(UTC)
         self._last_successful_status_monotonic = time.monotonic()
 
     def _mark_update_failed(self) -> None:
@@ -274,8 +290,11 @@ class TerneoThermostat:
                 raise ValueError("Invalid parameter record")
             number, data_type, value = param
             if (
-                not isinstance(number, int) or isinstance(number, bool) or number < 0
-                or not isinstance(data_type, int) or isinstance(data_type, bool)
+                not isinstance(number, int)
+                or isinstance(number, bool)
+                or number < 0
+                or not isinstance(data_type, int)
+                or isinstance(data_type, bool)
                 or data_type not in DataType
             ):
                 raise ValueError("Invalid parameter number or type")
@@ -321,12 +340,14 @@ class TerneoThermostat:
             if result is False:
                 return self._request_failed(
                     "Unable to verify legacy parameter write",
-                    command=True, uncertain=True,
+                    command=True,
+                    uncertain=True,
                 )
         if result.get("sn") != self.sn:
             return self._request_failed(
                 "Missing thermostat identity in command acknowledgement",
-                command=True, uncertain=True,
+                command=True,
+                uncertain=True,
             )
         try:
             confirmed = self._parse_parameters(result.get("par"))
@@ -335,13 +356,18 @@ class TerneoThermostat:
                 f"Invalid command acknowledgement: {err}", command=True, uncertain=True
             )
         for number, (data_type, value) in requested.items():
-            if number not in confirmed or confirmed[number][0] != data_type or (
-                self._convert_value(confirmed[number][1], data_type)
-                != self._convert_value(value, data_type)
+            if (
+                number not in confirmed
+                or confirmed[number][0] != data_type
+                or (
+                    self._convert_value(confirmed[number][1], data_type)
+                    != self._convert_value(value, data_type)
+                )
             ):
                 return self._request_failed(
                     "Thermostat did not confirm all requested parameters",
-                    command=True, uncertain=True,
+                    command=True,
+                    uncertain=True,
                 )
         return result
 
@@ -364,7 +390,7 @@ class TerneoThermostat:
                     raise ValueError("Invalid binary status")
             if "m.0" in result and str(result["m.0"]) not in ("0", "1", "2"):
                 raise ValueError("Invalid control type")
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return self._request_failed("Invalid status response")
         self._status = result
         return result
@@ -458,9 +484,19 @@ class TerneoThermostat:
     def fast_poll_supported(self) -> bool:
         """Use status-only polling only with complete operating-state telemetry."""
         required = ("t.2",) if self._is_new_version else ()
-        return all(key in self._status for key in (*required,
-            "t.1", "t.5", "m.0", "m.1", "m.5", "f.0", "f.16",
-        ))
+        return all(
+            key in self._status
+            for key in (
+                *required,
+                "t.1",
+                "t.5",
+                "m.0",
+                "m.1",
+                "m.5",
+                "f.0",
+                "f.16",
+            )
+        )
 
     @property
     def last_refresh_error_category(self) -> str | None:
@@ -484,8 +520,11 @@ class TerneoThermostat:
                 "available": self.settings_available,
                 "last_successful_update": self._last_successful_settings_update,
                 "age_seconds": (
-                    max(0.0, time.monotonic() - self._last_successful_settings_monotonic)
-                    if self._last_successful_settings_monotonic is not None else None
+                    max(
+                        0.0, time.monotonic() - self._last_successful_settings_monotonic
+                    )
+                    if self._last_successful_settings_monotonic is not None
+                    else None
                 ),
                 "error": self._last_settings_error,
                 "error_category": self._last_settings_error_category,
@@ -494,7 +533,8 @@ class TerneoThermostat:
                 "last_successful_update": self._last_successful_status_update,
                 "age_seconds": (
                     max(0.0, time.monotonic() - self._last_successful_status_monotonic)
-                    if self._last_successful_status_monotonic is not None else None
+                    if self._last_successful_status_monotonic is not None
+                    else None
                 ),
                 "fast_poll_supported": self.fast_poll_supported,
             },
@@ -816,8 +856,11 @@ class TerneoThermostat:
                     DataType.BOOL,
                     "1" if hvac_mode == "cool" else "0",
                 ],
-                [ParamNum.MODE, DataType.UINT8,
-                 self._operation_mode_to_api(OperationMode.MANUAL)],
+                [
+                    ParamNum.MODE,
+                    DataType.UINT8,
+                    self._operation_mode_to_api(OperationMode.MANUAL),
+                ],
             ]
         else:
             raise ValueError("Unsupported HVAC mode")
@@ -827,22 +870,33 @@ class TerneoThermostat:
     def set_setpoint(self, temperature: float) -> bool:
         """Set target temperature."""
         control_type = self.control_type or ControlType.FLOOR
-        
+
         if control_type == ControlType.FLOOR:
             param = ParamNum.MANUAL_FLOOR
         else:
-            param = ParamNum.MANUAL_AIR if self._is_new_version else ParamNum.MANUAL_FLOOR
-        
+            param = (
+                ParamNum.MANUAL_AIR if self._is_new_version else ParamNum.MANUAL_FLOOR
+            )
+
         temp_value = self._temperature_to_api(temperature, param)
-        
+
         # Turn on, set manual mode, and set temperature
-        result = self.set_parameters([
-            [ParamNum.POWER_OFF, DataType.BOOL, "0"],
-            [ParamNum.MODE, DataType.UINT8,
-             self._operation_mode_to_api(OperationMode.MANUAL)],
-            [param, DataType.INT8 if not self._is_new_version else DataType.INT16, temp_value],
-        ])
-        
+        result = self.set_parameters(
+            [
+                [ParamNum.POWER_OFF, DataType.BOOL, "0"],
+                [
+                    ParamNum.MODE,
+                    DataType.UINT8,
+                    self._operation_mode_to_api(OperationMode.MANUAL),
+                ],
+                [
+                    param,
+                    DataType.INT8 if not self._is_new_version else DataType.INT16,
+                    temp_value,
+                ],
+            ]
+        )
+
         if result:
             self._setpoint = self._temperature_from_api(int(temp_value), param)
         return bool(result)
@@ -851,11 +905,13 @@ class TerneoThermostat:
         """Set a telemetry-mode enum using the generation's parameter encoding."""
         if mode not in [OperationMode.SCHEDULE, OperationMode.MANUAL]:
             raise ValueError("Mode must be 0 (schedule) or 3 (manual)")
-        
-        result = self.set_parameters([
-            [ParamNum.POWER_OFF, DataType.BOOL, "0"],
-            [ParamNum.MODE, DataType.UINT8, self._operation_mode_to_api(mode)],
-        ])
+
+        result = self.set_parameters(
+            [
+                [ParamNum.POWER_OFF, DataType.BOOL, "0"],
+                [ParamNum.MODE, DataType.UINT8, self._operation_mode_to_api(mode)],
+            ]
+        )
         return bool(result)
 
     def turn_on(self) -> bool:
@@ -874,51 +930,51 @@ class TerneoThermostat:
 
     def set_children_lock(self, enabled: bool) -> bool:
         """Set children lock."""
-        result = self.set_parameters([
-            [ParamNum.CHILDREN_LOCK, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.CHILDREN_LOCK, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_cooling_mode(self, enabled: bool) -> bool:
         """Set cooling mode (vs heating)."""
-        result = self.set_parameters([
-            [ParamNum.COOLING_CONTROL_WAY, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.COOLING_CONTROL_WAY, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_control_type(self, control_type: int) -> bool:
         """Set control type (0=floor, 1=air, 2=air with floor limit)."""
         if control_type not in [0, 1, 2]:
             raise ValueError("Control type must be 0, 1, or 2")
-        
-        result = self.set_parameters([
-            [ParamNum.CONTROL_TYPE, DataType.UINT8, str(control_type)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.CONTROL_TYPE, DataType.UINT8, str(control_type)]]
+        )
         return bool(result)
 
     def set_hysteresis(self, value: float) -> bool:
         """Set hysteresis in Celsius."""
         api_value = int(value * 10)
-        result = self.set_parameters([
-            [ParamNum.HYSTERESIS, DataType.UINT8, str(api_value)]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.HYSTERESIS, DataType.UINT8, str(api_value)]]
+        )
         return bool(result)
 
     def set_brightness(self, value: int) -> bool:
         """Set display brightness (0-9)."""
         if not 0 <= value <= 9:
             raise ValueError("Brightness must be between 0 and 9")
-        
-        result = self.set_parameters([
-            [ParamNum.BRIGHTNESS, DataType.UINT8, str(value)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.BRIGHTNESS, DataType.UINT8, str(value)]]
+        )
         return bool(result)
 
     def set_pre_control(self, enabled: bool) -> bool:
         """Set pre-heating mode."""
-        result = self.set_parameters([
-            [ParamNum.PRE_CONTROL, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.PRE_CONTROL, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_window_open_control(self, enabled: bool) -> bool:
@@ -926,25 +982,27 @@ class TerneoThermostat:
         if not self._is_new_version:
             _LOGGER.warning("Window open control is only available on new version")
             return False
-        
-        result = self.set_parameters([
-            [ParamNum.WINDOW_OPEN_CONTROL, DataType.BOOL, "1" if enabled else "0"]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.WINDOW_OPEN_CONTROL, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_use_night_brightness(self, enabled: bool) -> bool:
         """Set night brightness mode."""
-        result = self.set_parameters([
-            [ParamNum.USE_NIGHT_BRIGHT, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.USE_NIGHT_BRIGHT, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_floor_limits(self, lower: int, upper: int) -> bool:
         """Set floor temperature limits."""
-        result = self.set_parameters([
-            [ParamNum.LOWER_LIMIT, DataType.INT8, str(lower)],
-            [ParamNum.UPPER_LIMIT, DataType.INT8, str(upper)],
-        ])
+        result = self.set_parameters(
+            [
+                [ParamNum.LOWER_LIMIT, DataType.INT8, str(lower)],
+                [ParamNum.UPPER_LIMIT, DataType.INT8, str(upper)],
+            ]
+        )
         return bool(result)
 
     def set_air_limits(self, lower: int, upper: int) -> bool:
@@ -952,49 +1010,51 @@ class TerneoThermostat:
         if not self._is_new_version:
             _LOGGER.warning("Air limits are only available on new version")
             return False
-        
-        result = self.set_parameters([
-            [ParamNum.LOWER_AIR_LIMIT, DataType.INT8, str(lower)],
-            [ParamNum.UPPER_AIR_LIMIT, DataType.INT8, str(upper)],
-        ])
+
+        result = self.set_parameters(
+            [
+                [ParamNum.LOWER_AIR_LIMIT, DataType.INT8, str(lower)],
+                [ParamNum.UPPER_AIR_LIMIT, DataType.INT8, str(upper)],
+            ]
+        )
         return bool(result)
 
     def set_sensor_type(self, sensor_type: int) -> bool:
         """Set temperature sensor type (0-6)."""
         if not 0 <= sensor_type <= 6:
             raise ValueError("Sensor type must be between 0 and 6")
-        
-        result = self.set_parameters([
-            [ParamNum.SENSOR_TYPE, DataType.UINT8, str(sensor_type)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.SENSOR_TYPE, DataType.UINT8, str(sensor_type)]]
+        )
         return bool(result)
 
     def set_prop_koef(self, value: int) -> bool:
         """Set proportional mode coefficient (minutes in 30-min cycle)."""
         if not 0 <= value <= 30:
             raise ValueError("Proportional coefficient must be between 0 and 30")
-        
-        result = self.set_parameters([
-            [ParamNum.PROP_KOEF, DataType.UINT8, str(value)]
-        ])
+
+        result = self.set_parameters([[ParamNum.PROP_KOEF, DataType.UINT8, str(value)]])
         return bool(result)
 
     def set_nc_contact_control(self, enabled: bool) -> bool:
         """Set relay inversion (NC mode)."""
-        result = self.set_parameters([
-            [ParamNum.NC_CONTACT_CONTROL, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.NC_CONTACT_CONTROL, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_night_brightness_time(self, start_minutes: int, end_minutes: int) -> bool:
         """Set night brightness time range (minutes from 00:00)."""
         if not 0 <= start_minutes <= 1439 or not 0 <= end_minutes <= 1439:
             raise ValueError("Time must be between 0 and 1439 minutes")
-        
-        result = self.set_parameters([
-            [ParamNum.NIGHT_BRIGHT_START, DataType.UINT16, str(start_minutes)],
-            [ParamNum.NIGHT_BRIGHT_END, DataType.UINT16, str(end_minutes)],
-        ])
+
+        result = self.set_parameters(
+            [
+                [ParamNum.NIGHT_BRIGHT_START, DataType.UINT16, str(start_minutes)],
+                [ParamNum.NIGHT_BRIGHT_END, DataType.UINT16, str(end_minutes)],
+            ]
+        )
         return bool(result)
 
     def set_button_corrections(self, minus: int, menu: int, plus: int) -> bool:
@@ -1002,12 +1062,14 @@ class TerneoThermostat:
         for val in [minus, menu, plus]:
             if not -30 <= val <= 30:
                 raise ValueError("Button correction must be between -30 and 30")
-        
-        result = self.set_parameters([
-            [ParamNum.BUTTON_MINUS_COR, DataType.INT8, str(minus)],
-            [ParamNum.BUTTON_MENU_COR, DataType.INT8, str(menu)],
-            [ParamNum.BUTTON_PLUS_COR, DataType.INT8, str(plus)],
-        ])
+
+        result = self.set_parameters(
+            [
+                [ParamNum.BUTTON_MINUS_COR, DataType.INT8, str(minus)],
+                [ParamNum.BUTTON_MENU_COR, DataType.INT8, str(menu)],
+                [ParamNum.BUTTON_PLUS_COR, DataType.INT8, str(plus)],
+            ]
+        )
         return bool(result)
 
     def set_floor_correction(self, value: float) -> bool:
@@ -1015,10 +1077,10 @@ class TerneoThermostat:
         api_value = int(value * 10)
         if not -127 <= api_value <= 127:
             raise ValueError("Floor correction must be between -12.7 and 12.7")
-        
-        result = self.set_parameters([
-            [ParamNum.FLOOR_CORRECTION, DataType.INT8, str(api_value)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.FLOOR_CORRECTION, DataType.INT8, str(api_value)]]
+        )
         return bool(result)
 
     def set_air_correction(self, value: float) -> bool:
@@ -1026,28 +1088,28 @@ class TerneoThermostat:
         if not self._is_new_version:
             _LOGGER.warning("Air correction is only available on new version")
             return False
-        
+
         api_value = int(value * 10)
         if not -127 <= api_value <= 127:
             raise ValueError("Air correction must be between -12.7 and 12.7")
-        
-        result = self.set_parameters([
-            [ParamNum.AIR_CORRECTION, DataType.INT8, str(api_value)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.AIR_CORRECTION, DataType.INT8, str(api_value)]]
+        )
         return bool(result)
 
     def set_lan_block(self, enabled: bool) -> bool:
         """Set LAN API block."""
-        result = self.set_parameters([
-            [ParamNum.LAN_BLOCK, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.LAN_BLOCK, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_cloud_block(self, enabled: bool) -> bool:
         """Set cloud block."""
-        result = self.set_parameters([
-            [ParamNum.CLOUD_BLOCK, DataType.BOOL, "1" if enabled else "0"]
-        ])
+        result = self.set_parameters(
+            [[ParamNum.CLOUD_BLOCK, DataType.BOOL, "1" if enabled else "0"]]
+        )
         return bool(result)
 
     def set_advanced_floor_limits(self, min_temp: int, max_temp: int) -> bool:
@@ -1055,11 +1117,13 @@ class TerneoThermostat:
         if not self._is_new_version:
             _LOGGER.warning("Advanced floor limits are only available on new version")
             return False
-        
-        result = self.set_parameters([
-            [ParamNum.MIN_TEMP_ADVANCED, DataType.INT8, str(min_temp)],
-            [ParamNum.MAX_TEMP_ADVANCED, DataType.INT8, str(max_temp)],
-        ])
+
+        result = self.set_parameters(
+            [
+                [ParamNum.MIN_TEMP_ADVANCED, DataType.INT8, str(min_temp)],
+                [ParamNum.MAX_TEMP_ADVANCED, DataType.INT8, str(max_temp)],
+            ]
+        )
         return bool(result)
 
     def set_ble_sensor_interval(self, minutes: int) -> bool:
@@ -1067,13 +1131,13 @@ class TerneoThermostat:
         if not self._is_new_version:
             _LOGGER.warning("BLE sensor interval is only available on new version")
             return False
-        
+
         if not 1 <= minutes <= 60:
             raise ValueError("BLE sensor interval must be between 1 and 60 minutes")
-        
-        result = self.set_parameters([
-            [ParamNum.BLE_SENSOR_INTERVAL, DataType.UINT8, str(minutes)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.BLE_SENSOR_INTERVAL, DataType.UINT8, str(minutes)]]
+        )
         return bool(result)
 
     def set_warning_temps(self, lower: int, upper: int) -> bool:
@@ -1081,28 +1145,36 @@ class TerneoThermostat:
         if not self._is_new_version:
             _LOGGER.warning("Warning temps are only available on new version")
             return False
-        
-        result = self.set_parameters([
-            [ParamNum.LOWER_WARNING_TEMP, DataType.INT8, str(lower)],
-            [ParamNum.UPPER_WARNING_TEMP, DataType.INT8, str(upper)],
-        ])
+
+        result = self.set_parameters(
+            [
+                [ParamNum.LOWER_WARNING_TEMP, DataType.INT8, str(lower)],
+                [ParamNum.UPPER_WARNING_TEMP, DataType.INT8, str(upper)],
+            ]
+        )
         return bool(result)
 
-    def set_away_temperature(self, floor_temp: float, air_temp: float | None = None) -> bool:
+    def set_away_temperature(
+        self, floor_temp: float, air_temp: float | None = None
+    ) -> bool:
         """Set away mode temperatures."""
         params = [
-            [ParamNum.AWAY_FLOOR, 
-             DataType.INT8 if not self._is_new_version else DataType.INT16, 
-             self._temperature_to_api(floor_temp, ParamNum.AWAY_FLOOR)]
+            [
+                ParamNum.AWAY_FLOOR,
+                DataType.INT8 if not self._is_new_version else DataType.INT16,
+                self._temperature_to_api(floor_temp, ParamNum.AWAY_FLOOR),
+            ]
         ]
-        
+
         if self._is_new_version and air_temp is not None:
-            params.append([
-                ParamNum.AWAY_AIR, 
-                DataType.INT16, 
-                self._temperature_to_api(air_temp, ParamNum.AWAY_AIR)
-            ])
-        
+            params.append(
+                [
+                    ParamNum.AWAY_AIR,
+                    DataType.INT16,
+                    self._temperature_to_api(air_temp, ParamNum.AWAY_AIR),
+                ]
+            )
+
         result = self.set_parameters(params)
         return bool(result)
 
@@ -1113,10 +1185,10 @@ class TerneoThermostat:
             api_value = watts // 10
         else:
             api_value = (watts + 1500) // 20
-        
-        result = self.set_parameters([
-            [ParamNum.POWER, DataType.UINT16, str(api_value)]
-        ])
+
+        result = self.set_parameters(
+            [[ParamNum.POWER, DataType.UINT16, str(api_value)]]
+        )
         return bool(result)
 
     def update(self, status_on_settings_failure: bool = False) -> bool:
@@ -1136,20 +1208,20 @@ class TerneoThermostat:
                 return self.update_status()
             self._mark_update_failed()
             return False
-        
+
         # Get status
         status_result = self.get_status()
         if not status_result:
             self._parameters = previous_parameters
             self._mark_update_failed()
             return False
-        
+
         # Parse status
         self._settings_available = True
         self._last_settings_error = None
         self._last_settings_error_category = None
         self._parse_status(status_result)
-        
+
         self._mark_update_successful()
         return True
 
@@ -1168,21 +1240,22 @@ class TerneoThermostat:
     def _parse_status(self, data: dict) -> None:
         """Parse status response."""
         self._power_on = (
-            int(data["f.16"]) == 0 if "f.16" in data
+            int(data["f.16"]) == 0
+            if "f.16" in data
             else not self._get_param_value(ParamNum.POWER_OFF)
         )
         # Floor temperature (t.1 = raw * 16)
         if "t.1" in data:
             self._floor_temperature = float(data["t.1"]) / 16.0
-        
+
         # Air temperature (t.2 for new version)
         if self._is_new_version and "t.2" in data:
             self._air_temperature = float(data["t.2"]) / 16.0
-        
+
         # Setpoint (t.5 = raw * 16)
         if "t.5" in data:
             self._setpoint = float(data["t.5"]) / 16.0
-        
+
         # Mode
         if "m.1" in data:
             mode_value = int(data["m.1"])
@@ -1191,7 +1264,7 @@ class TerneoThermostat:
                 self._mode = -1  # Off
             else:
                 self._mode = mode_value
-        
+
         # Relay state and energy tracking
         if "f.0" in data:
             new_relay_state = int(data["f.0"]) == 1
@@ -1208,21 +1281,23 @@ class TerneoThermostat:
     def _update_energy_tracking(self, new_relay_state: bool) -> None:
         """Estimate the preceding confirmed relay interval using its sampled wattage."""
         current_time = time.monotonic()
-        
+
         # If we have a previous measurement and relay was ON, calculate energy
         if self._last_relay_update is not None and self._relay_state is True:
             elapsed_seconds = current_time - self._last_relay_update
-            
+
             if 0 < elapsed_seconds <= self._max_heating_interval:
                 self._heating_time_seconds += elapsed_seconds
                 power_watts = self._last_relay_power_watts
                 if power_watts and power_watts > 0:
                     energy_kwh = (power_watts * elapsed_seconds) / 3600000.0
                     self._heating_energy_kwh += energy_kwh
-        
+
         self._last_relay_update = current_time
         self._last_relay_power_watts = (
-            self.power_watts if new_relay_state and self._last_settings_error is None else None
+            self.power_watts
+            if new_relay_state and self._last_settings_error is None
+            else None
         )
 
     @property

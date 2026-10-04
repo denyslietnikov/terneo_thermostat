@@ -1,4 +1,5 @@
 """Constants for Terneo/Welrok thermostat integration."""
+
 from enum import IntEnum
 
 DOMAIN = "terneo"
@@ -23,9 +24,11 @@ DEFAULT_MAX_UPDATE_FAILURES = 3
 CMD_GET_PARAMS = 1
 CMD_GET_STATUS = 4
 
+
 # Parameter numbers (common for both versions)
 class ParamNum(IntEnum):
     """Parameter numbers for API."""
+
     START_AWAY_TIME = 0
     END_AWAY_TIME = 1
     MODE = 2
@@ -79,6 +82,7 @@ class ParamNum(IntEnum):
 # Control types
 class ControlType(IntEnum):
     """Control type modes."""
+
     FLOOR = 0
     AIR = 1
     AIR_WITH_FLOOR_LIMIT = 2
@@ -87,6 +91,7 @@ class ControlType(IntEnum):
 # Operation modes
 class OperationMode(IntEnum):
     """Telemetry operation modes, not parameter-write values."""
+
     SCHEDULE = 0
     MANUAL = 3
     AWAY = 4  # When away times are set
@@ -103,9 +108,11 @@ SENSOR_TYPES = {
     6: "47 kΩ",
 }
 
+
 # Data types for parameters
 class DataType(IntEnum):
     """Data types for API parameters."""
+
     CSTRING = 0
     INT8 = 1
     UINT8 = 2

@@ -1,4 +1,5 @@
 """Command acknowledgement tests; no physical thermostat is contacted."""
+
 from __future__ import annotations
 
 import json
@@ -10,9 +11,9 @@ import homeassistant  # noqa: F401
 import requests
 
 from custom_components.terneo.const import (
-    DataType,
     DEVICE_TYPE_NEW,
     DEVICE_TYPE_OLD,
+    DataType,
     ParamNum,
 )
 from custom_components.terneo.thermostat import TerneoThermostat
@@ -52,14 +53,20 @@ class CommandAcknowledgementTests(unittest.TestCase):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             with self.subTest(device_type=device_type):
                 thermostat = self.thermostat(device_type)
-                payload = self.acknowledgement(thermostat, [[23, 2, "2"], [125, 7, "1"]])
+                payload = self.acknowledgement(
+                    thermostat, [[23, 2, "2"], [125, 7, "1"]]
+                )
                 with patch("requests.post", return_value=response(payload)) as post:
                     self.assertTrue(thermostat.turn_off())
                 self.assertFalse(thermostat.power_on)
                 self.assertIsNone(thermostat.last_update_error)
-                self.assertEqual(post.call_args.kwargs["json"], {
-                    "sn": thermostat.sn, "par": [[ParamNum.POWER_OFF, DataType.BOOL, "1"]],
-                })
+                self.assertEqual(
+                    post.call_args.kwargs["json"],
+                    {
+                        "sn": thermostat.sn,
+                        "par": [[ParamNum.POWER_OFF, DataType.BOOL, "1"]],
+                    },
+                )
                 post.assert_called_once()
 
     def test_turn_on_updates_cache_only_after_acknowledgement(self):
@@ -78,7 +85,12 @@ class CommandAcknowledgementTests(unittest.TestCase):
             with self.subTest(device_type=device_type):
                 thermostat = self.thermostat(device_type)
                 payload = self.acknowledgement(
-                    thermostat, [[5, data_type, value], [2, 2, "1" if device_type == DEVICE_TYPE_OLD else "3"], [125, 7, "0"]]
+                    thermostat,
+                    [
+                        [5, data_type, value],
+                        [2, 2, "1" if device_type == DEVICE_TYPE_OLD else "3"],
+                        [125, 7, "0"],
+                    ],
                 )
                 with patch("requests.post", return_value=response(payload)):
                     self.assertTrue(thermostat.set_setpoint(26.75))
@@ -88,10 +100,17 @@ class CommandAcknowledgementTests(unittest.TestCase):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             thermostat = self.thermostat(device_type)
             for payload in (
-                {"status": "error"}, {"status": "timeout"},
-                {"success": "block"}, {"success": "false"}, {"success": False},
-                {"status": "ok"}, {"error": "secret"},
-                {}, [], None, {"sn": thermostat.sn},
+                {"status": "error"},
+                {"status": "timeout"},
+                {"success": "block"},
+                {"success": "false"},
+                {"success": False},
+                {"status": "ok"},
+                {"error": "secret"},
+                {},
+                [],
+                None,
+                {"sn": thermostat.sn},
                 {"sn": "wrong-serial", "par": [[125, 7, "1"]]},
                 {"par": [[125, 7, "1"]]},
             ):
@@ -105,11 +124,17 @@ class CommandAcknowledgementTests(unittest.TestCase):
     def test_contradictory_error_markers_override_matching_parameters(self):
         thermostat = self.thermostat()
         for marker in (
-            {"success": "block"}, {"success": "false"}, {"error": "secret"},
-            {"status": "error"}, {"status": "timeout"},
+            {"success": "block"},
+            {"success": "false"},
+            {"error": "secret"},
+            {"status": "error"},
+            {"status": "timeout"},
         ):
             with self.subTest(marker=marker):
-                payload = {**self.acknowledgement(thermostat, [[125, 7, "1"]]), **marker}
+                payload = {
+                    **self.acknowledgement(thermostat, [[125, 7, "1"]]),
+                    **marker,
+                }
                 with patch("requests.post", return_value=response(payload)):
                     self.assertFalse(thermostat.turn_off())
                 self.assert_cache_unchanged(thermostat)
@@ -117,28 +142,40 @@ class CommandAcknowledgementTests(unittest.TestCase):
     def test_malformed_parameters_do_not_confirm_a_write(self):
         thermostat = self.thermostat()
         for params in (
-            None, {}, [], [[125]], [[125, 7, "1", "extra"]],
+            None,
+            {},
+            [],
+            [[125]],
+            [[125, 7, "1", "extra"]],
             [[125, 7, "1"], [125, 7, "1"]],
             [[125, 7, "1"], [125, 7, "0"]],
-            [[True, 7, "1"]], [[125, True, "1"]], [[-1, 7, "1"]],
-            [[125, 99, "1"]], [[125, 7, 1]], [[125, 7, "true"]],
+            [[True, 7, "1"]],
+            [[125, True, "1"]],
+            [[-1, 7, "1"]],
+            [[125, 99, "1"]],
+            [[125, 7, 1]],
+            [[125, 7, "true"]],
             [[125, 7, "1"], [23, 2, "secret"]],
         ):
             with self.subTest(params=params):
-                with patch("requests.post", return_value=response(
-                    self.acknowledgement(thermostat, params)
-                )):
+                with patch(
+                    "requests.post",
+                    return_value=response(self.acknowledgement(thermostat, params)),
+                ):
                     self.assertFalse(thermostat.turn_off())
                 self.assert_cache_unchanged(thermostat)
-                self.assertIn("Invalid command acknowledgement", thermostat.last_update_error)
+                self.assertIn(
+                    "Invalid command acknowledgement", thermostat.last_update_error
+                )
 
     def test_missing_wrong_value_or_wrong_type_is_unconfirmed(self):
         thermostat = self.thermostat()
         for params in ([[23, 2, "2"]], [[125, 7, "0"]], [[125, 2, "1"]]):
             with self.subTest(params=params):
-                with patch("requests.post", return_value=response(
-                    self.acknowledgement(thermostat, params)
-                )):
+                with patch(
+                    "requests.post",
+                    return_value=response(self.acknowledgement(thermostat, params)),
+                ):
                     self.assertFalse(thermostat.turn_off())
                 self.assert_cache_unchanged(thermostat)
                 self.assertIn("did not confirm", thermostat.last_update_error)
@@ -152,9 +189,10 @@ class CommandAcknowledgementTests(unittest.TestCase):
             [[125, 7, "0"], [2, 2, "1"], [5, 1, "25"]],
         ):
             with self.subTest(params=params):
-                with patch("requests.post", return_value=response(
-                    self.acknowledgement(thermostat, params)
-                )):
+                with patch(
+                    "requests.post",
+                    return_value=response(self.acknowledgement(thermostat, params)),
+                ):
                     self.assertFalse(thermostat.set_setpoint(27))
                 self.assert_cache_unchanged(thermostat)
 
@@ -169,18 +207,25 @@ class CommandAcknowledgementTests(unittest.TestCase):
         with patch("requests.post", return_value=response({"success": "true"})):
             self.assertFalse(thermostat.set_children_lock(True))
 
-    def test_legacy_success_marker_requires_matching_readback_without_cache_publication(self):
+    def test_legacy_success_marker_requires_matching_readback_without_cache_publication(
+        self,
+    ):
         thermostat = self.thermostat()
         params = [[125, 7, "1"], [2, 2, "1"], [5, 1, "17"]]
         confirmed = self.acknowledgement(thermostat, params + [[23, 2, "2"]])
         for marker in ({"success": "true"}, {"success": "true", "sn": thermostat.sn}):
             with self.subTest(marker=marker):
-                with patch("requests.post", side_effect=[response(marker), response(confirmed)]) as post:
+                with patch(
+                    "requests.post", side_effect=[response(marker), response(confirmed)]
+                ) as post:
                     self.assertEqual(thermostat.set_parameters(params), confirmed)
-                self.assertEqual([call.kwargs["json"] for call in post.call_args_list], [
-                    {"sn": thermostat.sn, "par": params},
-                    {"sn": thermostat.sn, "cmd": 1},
-                ])
+                self.assertEqual(
+                    [call.kwargs["json"] for call in post.call_args_list],
+                    [
+                        {"sn": thermostat.sn, "par": params},
+                        {"sn": thermostat.sn, "cmd": 1},
+                    ],
+                )
                 self.assert_cache_unchanged(thermostat)
 
     def test_legacy_success_readback_failures_do_not_update_cache_or_repeat_write(self):
@@ -192,28 +237,44 @@ class CommandAcknowledgementTests(unittest.TestCase):
             {"sn": "test-serial", "par": [[23, 2, "2"]]},
             {"sn": "test-serial", "par": []},
             {"sn": "test-serial", "par": [[125, 7, "invalid"]]},
-            {"success": "true"}, {"success": "block"}, {"status": "timeout"},
+            {"success": "true"},
+            {"success": "block"},
+            {"status": "timeout"},
         ):
             with self.subTest(payload=payload):
                 thermostat = self.thermostat()
-                with patch("requests.post", side_effect=[
-                    response({"success": "true"}), response(payload),
-                ]) as post:
+                with patch(
+                    "requests.post",
+                    side_effect=[
+                        response({"success": "true"}),
+                        response(payload),
+                    ],
+                ) as post:
                     self.assertFalse(thermostat.turn_off())
                 self.assertEqual(post.call_count, 2)
-                self.assertEqual(sum("par" in c.kwargs["json"] for c in post.call_args_list), 1)
+                self.assertEqual(
+                    sum("par" in c.kwargs["json"] for c in post.call_args_list), 1
+                )
                 self.assert_cache_unchanged(thermostat)
                 self.assertIn("outcome is unknown", thermostat.last_update_error)
 
-    def test_legacy_verification_transport_failure_preserves_uncertain_command_error(self):
+    def test_legacy_verification_transport_failure_preserves_uncertain_command_error(
+        self,
+    ):
         thermostat = self.thermostat()
-        with patch("requests.post", side_effect=[
-            response({"success": "true"}), requests.Timeout("private network details"),
-        ]) as post:
+        with patch(
+            "requests.post",
+            side_effect=[
+                response({"success": "true"}),
+                requests.Timeout("private network details"),
+            ],
+        ) as post:
             self.assertFalse(thermostat.turn_off())
         self.assertEqual(post.call_count, 2)
         self.assert_cache_unchanged(thermostat)
-        self.assertIn("Unable to verify legacy parameter write", thermostat.last_update_error)
+        self.assertIn(
+            "Unable to verify legacy parameter write", thermostat.last_update_error
+        )
         self.assertIn("outcome is unknown", thermostat.last_update_error)
         self.assertNotIn("private network details", thermostat.last_update_error)
 
@@ -241,9 +302,13 @@ class CommandAcknowledgementTests(unittest.TestCase):
     def test_legacy_setpoint_cache_changes_only_after_matching_success_readback(self):
         thermostat = self.thermostat()
         params = [[125, 7, "0"], [2, 2, "1"], [5, 1, "17"]]
-        with patch("requests.post", side_effect=[
-            response({"success": "true"}), response(self.acknowledgement(thermostat, params)),
-        ]) as post:
+        with patch(
+            "requests.post",
+            side_effect=[
+                response({"success": "true"}),
+                response(self.acknowledgement(thermostat, params)),
+            ],
+        ) as post:
             self.assertTrue(thermostat.set_setpoint(17))
         self.assertEqual(post.call_count, 2)
         self.assertEqual(thermostat.setpoint, 17)
@@ -251,9 +316,12 @@ class CommandAcknowledgementTests(unittest.TestCase):
 
     def test_http_failure_does_not_change_cache(self):
         thermostat = self.thermostat()
-        with patch("requests.post", return_value=response(
-            self.acknowledgement(thermostat, [[125, 7, "1"]]), status_code=503
-        )) as post:
+        with patch(
+            "requests.post",
+            return_value=response(
+                self.acknowledgement(thermostat, [[125, 7, "1"]]), status_code=503
+            ),
+        ) as post:
             self.assertFalse(thermostat.turn_off())
         self.assertIn("HTTP 503", thermostat.last_update_error)
         self.assertIn("outcome is unknown", thermostat.last_update_error)
@@ -264,11 +332,14 @@ class CommandAcknowledgementTests(unittest.TestCase):
         thermostat = self.thermostat()
         secret_message = f"http://192.0.2.1/api.cgi sn={thermostat.sn} auth=secret"
         for error in (
-            requests.Timeout(secret_message), requests.ConnectionError(secret_message),
+            requests.Timeout(secret_message),
+            requests.ConnectionError(secret_message),
             requests.HTTPError(secret_message),
         ):
             with self.subTest(error=type(error).__name__):
-                with self.assertLogs("custom_components.terneo.thermostat", level="DEBUG") as logs:
+                with self.assertLogs(
+                    "custom_components.terneo.thermostat", level="DEBUG"
+                ) as logs:
                     with patch("requests.post", side_effect=error) as post:
                         self.assertFalse(thermostat.turn_off())
                 self.assert_cache_unchanged(thermostat)
@@ -297,7 +368,9 @@ class CommandAcknowledgementTests(unittest.TestCase):
             self.acknowledgement(thermostat, [[23, 2, f"secret {thermostat.sn}"]]),
         ):
             with self.subTest(payload=payload):
-                with self.assertLogs("custom_components.terneo.thermostat", level="DEBUG") as logs:
+                with self.assertLogs(
+                    "custom_components.terneo.thermostat", level="DEBUG"
+                ) as logs:
                     with patch("requests.post", return_value=response(payload)):
                         self.assertFalse(thermostat.turn_off())
                 for sensitive in (thermostat.sn, "192.0.2.1", "secret"):
@@ -308,9 +381,10 @@ class CommandAcknowledgementTests(unittest.TestCase):
         thermostat = self.thermostat()
         with patch("requests.post", return_value=response({"success": "block"})):
             self.assertFalse(thermostat.turn_off())
-        with patch("requests.post", return_value=response(
-            self.acknowledgement(thermostat, [[125, 7, "1"]])
-        )):
+        with patch(
+            "requests.post",
+            return_value=response(self.acknowledgement(thermostat, [[125, 7, "1"]])),
+        ):
             self.assertTrue(thermostat.turn_off())
         self.assertIsNone(thermostat.last_update_error)
 
@@ -318,7 +392,9 @@ class CommandAcknowledgementTests(unittest.TestCase):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             thermostat = self.thermostat(device_type)
             with self.subTest(device_type=device_type):
-                with patch("requests.post", return_value=response({"success": "true"})) as post:
+                with patch(
+                    "requests.post", return_value=response({"success": "true"})
+                ) as post:
                     self.assertTrue(thermostat.restart())
                 self.assertEqual(post.call_args.args[0], "http://192.0.2.1/test.cgi")
                 self.assertEqual(post.call_args.kwargs["json"], {"cmd": "restart"})
@@ -328,12 +404,18 @@ class CommandAcknowledgementTests(unittest.TestCase):
     def test_restart_rejects_missing_false_and_conflicting_acknowledgements(self):
         thermostat = self.thermostat()
         for payload in (
-            {}, {"success": "false"}, {"success": False}, {"success": True},
-            {"success": "block"}, {"status": "timeout"}, {"status": "ok"},
+            {},
+            {"success": "false"},
+            {"success": False},
+            {"success": True},
+            {"success": "block"},
+            {"status": "timeout"},
+            {"status": "ok"},
             {"success": "true", "status": "error"},
             {"success": "true", "error": "secret"},
             {"success": "true", "sn": "wrong-serial"},
-            self.acknowledgement(thermostat, [[125, 7, "1"]]), [],
+            self.acknowledgement(thermostat, [[125, 7, "1"]]),
+            [],
         ):
             with self.subTest(payload=payload):
                 with patch("requests.post", return_value=response(payload)):

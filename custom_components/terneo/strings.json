@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to Terneo Thermostat",
-        "description": "Enter the connection details for your Terneo/Welrok thermostat.",
+        "description": "Enter the connection details for your Terneo thermostat.",
         "data": {
           "host": "IP Address",
           "serial": "Serial Number"
@@ -11,6 +11,16 @@
         "data_description": {
           "host": "IP address of the thermostat",
           "serial": "Serial number of the device (can be found in device settings or on the device label)"
+        }
+      },
+      "reconfigure": {
+        "title": "Change Device Address",
+        "description": "Update the IP address for thermostat {serial}.",
+        "data": {
+          "host": "IP Address"
+        },
+        "data_description": {
+          "host": "New IP address of the same thermostat"
         }
       },
       "options": {
@@ -27,7 +37,10 @@
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This device is already configured.",
+      "already_in_progress": "Configuration for this device is already in progress.",
+      "unique_id_mismatch": "The device identity does not match the configured thermostat. A different thermostat cannot replace this device.",
+      "reconfigure_successful": "The thermostat address has been updated."
     }
   },
   "options": {
@@ -123,8 +136,8 @@
       "sensor_type": {
         "name": "Sensor Type",
         "state": {
-          "4.7k": "4.7 kΩ",
-          "6.8k": "6.8 kΩ",
+          "4_7k": "4.7 kΩ",
+          "6_8k": "6.8 kΩ",
           "10k": "10 kΩ",
           "12k": "12 kΩ",
           "15k": "15 kΩ",

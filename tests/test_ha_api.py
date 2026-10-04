@@ -1,14 +1,17 @@
 """Regression tests using real Home Assistant APIs and mocked device HTTP."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import threading
+import unittest
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
-import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import requests
+import voluptuous as vol
 from homeassistant.components.climate import HVACMode
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -17,13 +20,17 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
-from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
-import voluptuous as vol
-import requests
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.terneo import async_setup, async_setup_entry, async_unload_entry
 from custom_components.terneo.button import TerneoRestartButton
-from custom_components.terneo.climate import PRESET_MANUAL, PRESET_SCHEDULE, TerneoClimateEntity
+from custom_components.terneo.climate import (
+    PRESET_MANUAL,
+    PRESET_SCHEDULE,
+    TerneoClimateEntity,
+)
 from custom_components.terneo.const import DEVICE_TYPE_NEW, DEVICE_TYPE_OLD, DOMAIN
 from custom_components.terneo.coordinator import TerneoCoordinator
 from custom_components.terneo.number import NUMBER_DESCRIPTIONS, TerneoNumberEntity
@@ -45,10 +52,17 @@ def response(data):
 
 def entry(serial="058009000543474239343620000159", state=ConfigEntryState.LOADED):
     return ConfigEntry(
-        version=1, minor_version=1, domain=DOMAIN,
-        title=serial, data={"host": "192.0.2.1", "serial": serial},
-        options={}, source="user", unique_id=serial,
-        discovery_keys=MappingProxyType({}), subentries_data=[], state=state,
+        version=1,
+        minor_version=1,
+        domain=DOMAIN,
+        title=serial,
+        data={"host": "192.0.2.1", "serial": serial},
+        options={},
+        source="user",
+        unique_id=serial,
+        discovery_keys=MappingProxyType({}),
+        subentries_data=[],
+        state=state,
     )
 
 
@@ -129,7 +143,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         await self.hass.async_stop(force=True)
         self.temp.cleanup()
 
-    def make_coordinator(self, serial="058009000543474239343620000159", device_type=DEVICE_TYPE_OLD):
+    def make_coordinator(
+        self, serial="058009000543474239343620000159", device_type=DEVICE_TYPE_OLD
+    ):
         config = entry(serial)
         thermostat = TerneoThermostat(serial, "192.0.2.1", device_type)
         coordinator = TerneoCoordinator(self.hass, config, thermostat)
@@ -139,9 +155,16 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         return config, thermostat, coordinator
 
     def register_climate(self, config):
-        return er.async_get(self.hass).async_get_or_create(
-            "climate", DOMAIN, config.unique_id, config_entry=config,
-        ).entity_id
+        return (
+            er.async_get(self.hass)
+            .async_get_or_create(
+                "climate",
+                DOMAIN,
+                config.unique_id,
+                config_entry=config,
+            )
+            .entity_id
+        )
 
     async def test_service_only_controls_selected_thermostat(self):
         first, thermostat, coordinator = self.make_coordinator()
@@ -150,9 +173,12 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.register_climate(second)
         coordinator.async_request_refresh = AsyncMock()
         with patch.object(thermostat, "set_floor_limits", return_value=True) as command:
-            with patch.object(other, "set_floor_limits", return_value=True) as untouched:
+            with patch.object(
+                other, "set_floor_limits", return_value=True
+            ) as untouched:
                 await self.hass.services.async_call(
-                    DOMAIN, "set_floor_limits",
+                    DOMAIN,
+                    "set_floor_limits",
                     {"entity_id": entity_id, "lower": 5, "upper": 35},
                     blocking=True,
                 )
@@ -167,14 +193,20 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             config_entry_id=first.entry_id, identifiers={(DOMAIN, thermostat.sn)}
         )
         er.async_get(self.hass).async_get_or_create(
-            "climate", DOMAIN, first.unique_id,
-            config_entry=first, device_id=device.id,
+            "climate",
+            DOMAIN,
+            first.unique_id,
+            config_entry=first,
+            device_id=device.id,
         )
         self.register_climate(second)
         with patch.object(thermostat, "restart", return_value=True) as command:
             with patch.object(other, "restart", return_value=True) as untouched:
                 await self.hass.services.async_call(
-                    DOMAIN, "restart", {"device_id": device.id}, blocking=True,
+                    DOMAIN,
+                    "restart",
+                    {"device_id": device.id},
+                    blocking=True,
                 )
         command.assert_called_once()
         untouched.assert_not_called()
@@ -184,7 +216,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(thermostat, "set_floor_limits") as command:
             with self.assertRaises(vol.Invalid):
                 await self.hass.services.async_call(
-                    DOMAIN, "set_floor_limits", {"lower": 5, "upper": 35},
+                    DOMAIN,
+                    "set_floor_limits",
+                    {"lower": 5, "upper": 35},
                     blocking=True,
                 )
         command.assert_not_called()
@@ -195,7 +229,8 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(thermostat, "set_floor_limits") as command:
             with self.assertRaises(ServiceValidationError):
                 await self.hass.services.async_call(
-                    DOMAIN, "set_floor_limits",
+                    DOMAIN,
+                    "set_floor_limits",
                     {"entity_id": entity_id, "lower": 40, "upper": 10},
                     blocking=True,
                 )
@@ -210,10 +245,32 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_commands_raise_for_all_platforms(self):
         config, thermostat, coordinator = self.make_coordinator()
         entities = [
-            (TerneoClimateEntity(coordinator, thermostat, config), "async_turn_off", ()),
-            (TerneoSwitchEntity(coordinator, thermostat, config, SWITCH_DESCRIPTIONS[0]), "async_turn_off", ()),
-            (TerneoNumberEntity(coordinator, thermostat, config, NUMBER_DESCRIPTIONS[0]), "async_set_native_value", (2,)),
-            (TerneoSelectEntity(coordinator, thermostat, config, SELECT_DESCRIPTIONS[1]), "async_select_option", ("10k",)),
+            (
+                TerneoClimateEntity(coordinator, thermostat, config),
+                "async_turn_off",
+                (),
+            ),
+            (
+                TerneoSwitchEntity(
+                    coordinator, thermostat, config, SWITCH_DESCRIPTIONS[0]
+                ),
+                "async_turn_off",
+                (),
+            ),
+            (
+                TerneoNumberEntity(
+                    coordinator, thermostat, config, NUMBER_DESCRIPTIONS[0]
+                ),
+                "async_set_native_value",
+                (2,),
+            ),
+            (
+                TerneoSelectEntity(
+                    coordinator, thermostat, config, SELECT_DESCRIPTIONS[1]
+                ),
+                "async_select_option",
+                ("10k",),
+            ),
             (TerneoRestartButton(coordinator, thermostat, config), "async_press", ()),
         ]
         coordinator.async_request_refresh = AsyncMock()
@@ -225,7 +282,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         ):
             with patch("requests.post", **http):
                 for entity, method, args in entities:
-                    with self.subTest(scenario=scenario, platform=type(entity).__name__):
+                    with self.subTest(
+                        scenario=scenario, platform=type(entity).__name__
+                    ):
                         with self.assertRaises(HomeAssistantError):
                             await getattr(entity, method)(*args)
         coordinator.async_request_refresh.assert_not_awaited()
@@ -235,9 +294,15 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         thermostat._power_on = True
         coordinator.async_request_refresh = AsyncMock()
         climate = TerneoClimateEntity(coordinator, thermostat, config)
-        with patch("requests.post", return_value=response({
-            "sn": thermostat.sn, "par": [[125, 7, "1"]],
-        })):
+        with patch(
+            "requests.post",
+            return_value=response(
+                {
+                    "sn": thermostat.sn,
+                    "par": [[125, 7, "1"]],
+                }
+            ),
+        ):
             await climate.async_turn_off()
         self.assertFalse(thermostat.power_on)
         coordinator.async_request_refresh.assert_awaited_once()
@@ -245,8 +310,12 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
     async def test_uncertain_command_error_reaches_home_assistant(self):
         _, thermostat, coordinator = self.make_coordinator()
         thermostat._power_on = True
-        with patch("requests.post", side_effect=requests.Timeout("private details")) as post:
-            with self.assertRaisesRegex(HomeAssistantError, "outcome is unknown") as error:
+        with patch(
+            "requests.post", side_effect=requests.Timeout("private details")
+        ) as post:
+            with self.assertRaisesRegex(
+                HomeAssistantError, "outcome is unknown"
+            ) as error:
                 await coordinator.async_execute_command(thermostat.turn_off)
         self.assertNotIn("private details", str(error.exception))
         self.assertTrue(thermostat.power_on)
@@ -274,6 +343,7 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         _, thermostat, coordinator = self.make_coordinator()
         polling_started = asyncio.Event()
         release_polling = asyncio.Event()
+
         async def executor(command, *args):
             if command == thermostat.update:
                 polling_started.set()
@@ -281,15 +351,17 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 return True
             self.assertTrue(release_polling.is_set())
             return True
+
         with patch.object(self.hass, "async_add_executor_job", side_effect=executor):
             polling = asyncio.create_task(coordinator._async_update_data())
             await polling_started.wait()
-            command = asyncio.create_task(coordinator.async_execute_command(thermostat.turn_off))
+            command = asyncio.create_task(
+                coordinator.async_execute_command(thermostat.turn_off)
+            )
             await asyncio.sleep(0)
             self.assertFalse(command.done())
             release_polling.set()
             await asyncio.gather(polling, command)
-
 
     async def test_coordinator_retains_state_until_failure_threshold(self):
         config, thermostat, coordinator = self.make_coordinator()
@@ -316,15 +388,17 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
     async def test_unload_stops_coordinator_after_platforms_unload(self):
         config, _, coordinator = self.make_coordinator()
         self.hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
-        with patch.object(coordinator, "async_shutdown", new_callable=AsyncMock) as shutdown:
+        with patch.object(
+            coordinator, "async_shutdown", new_callable=AsyncMock
+        ) as shutdown:
             self.assertTrue(await async_unload_entry(self.hass, config))
             shutdown.assert_awaited_once()
         self.hass.config_entries.async_unload_platforms.return_value = False
-        with patch.object(coordinator, "async_shutdown", new_callable=AsyncMock) as shutdown:
+        with patch.object(
+            coordinator, "async_shutdown", new_callable=AsyncMock
+        ) as shutdown:
             self.assertFalse(await async_unload_entry(self.hass, config))
             shutdown.assert_not_called()
-
-
 
     async def test_hvac_modes_write_once_and_publish_only_full_readback(self):
         expected = {
@@ -340,9 +414,17 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                     manual = "1" if device_type == DEVICE_TYPE_OLD else "3"
                     if target in (HVACMode.HEAT, HVACMode.COOL):
                         params[-1][2] = manual
-                    config, thermostat, coordinator = self.make_coordinator(device_type=device_type)
-                    device_params = {125: [125, 7, "0"], 118: [118, 7, "1"], 2: [2, 2, manual]}
-                    thermostat._parameters = {n: (p[1], p[2]) for n, p in device_params.items()}
+                    config, thermostat, coordinator = self.make_coordinator(
+                        device_type=device_type
+                    )
+                    device_params = {
+                        125: [125, 7, "0"],
+                        118: [118, 7, "1"],
+                        2: [2, 2, manual],
+                    }
+                    thermostat._parameters = {
+                        n: (p[1], p[2]) for n, p in device_params.items()
+                    }
                     thermostat._power_on = True
                     thermostat._mode = 3
                     climate = TerneoClimateEntity(coordinator, thermostat, config)
@@ -353,12 +435,19 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(data["par"], params)
                             device_params.update({p[0]: p[:] for p in data["par"]})
                         if data.get("cmd") == 4:
-                            return response({
-                                "sn": thermostat.sn, "t.1": "368", "t.5": "400",
-                                "m.1": "0" if device_params[2][2] == "0" else "3", "f.0": "0",
-                                "f.16": device_params[125][2],
-                            })
-                        return response({"sn": thermostat.sn, "par": list(device_params.values())})
+                            return response(
+                                {
+                                    "sn": thermostat.sn,
+                                    "t.1": "368",
+                                    "t.5": "400",
+                                    "m.1": "0" if device_params[2][2] == "0" else "3",
+                                    "f.0": "0",
+                                    "f.16": device_params[125][2],
+                                }
+                            )
+                        return response(
+                            {"sn": thermostat.sn, "par": list(device_params.values())}
+                        )
 
                     async def refresh():
                         self.assertFalse(coordinator._request_lock.locked())
@@ -370,11 +459,14 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                     coordinator.async_request_refresh = AsyncMock(side_effect=refresh)
                     with patch("requests.post", side_effect=post) as http:
                         await climate.async_set_hvac_mode(target)
-                    self.assertEqual([c.kwargs["json"] for c in http.call_args_list], [
-                        {"sn": thermostat.sn, "par": params},
-                        {"sn": thermostat.sn, "cmd": 1},
-                        {"sn": thermostat.sn, "cmd": 4},
-                    ])
+                    self.assertEqual(
+                        [c.kwargs["json"] for c in http.call_args_list],
+                        [
+                            {"sn": thermostat.sn, "par": params},
+                            {"sn": thermostat.sn, "cmd": 1},
+                            {"sn": thermostat.sn, "cmd": 4},
+                        ],
+                    )
                     coordinator.async_request_refresh.assert_awaited_once()
                     self.assertEqual(thermostat.power_on, target != HVACMode.OFF)
                     if target == HVACMode.AUTO:
@@ -388,13 +480,33 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         thermostat._power_on = False
         thermostat._mode = -1
         climate = TerneoClimateEntity(coordinator, thermostat, config)
-        coordinator.async_request_refresh = AsyncMock(side_effect=coordinator.async_refresh)
-        with patch("requests.post", side_effect=[
-            requests.Timeout("private transport details"),
-            response({"sn": thermostat.sn, "par": [[125, 7, "0"], [118, 7, "1"], [2, 2, "1"]]}),
-            response({"sn": thermostat.sn, "t.1": "368", "t.5": "400", "m.1": "3", "f.0": "0"}),
-        ]) as http:
-            with self.assertRaisesRegex(HomeAssistantError, "outcome is unknown") as error:
+        coordinator.async_request_refresh = AsyncMock(
+            side_effect=coordinator.async_refresh
+        )
+        with patch(
+            "requests.post",
+            side_effect=[
+                requests.Timeout("private transport details"),
+                response(
+                    {
+                        "sn": thermostat.sn,
+                        "par": [[125, 7, "0"], [118, 7, "1"], [2, 2, "1"]],
+                    }
+                ),
+                response(
+                    {
+                        "sn": thermostat.sn,
+                        "t.1": "368",
+                        "t.5": "400",
+                        "m.1": "3",
+                        "f.0": "0",
+                    }
+                ),
+            ],
+        ) as http:
+            with self.assertRaisesRegex(
+                HomeAssistantError, "outcome is unknown"
+            ) as error:
                 await asyncio.wait_for(climate.async_set_hvac_mode(HVACMode.HEAT), 5)
         self.assertNotIn("private transport details", str(error.exception))
         self.assertIsNone(thermostat.last_update_error)
@@ -403,7 +515,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum("par" in c.kwargs["json"] for c in http.call_args_list), 1)
         coordinator.async_request_refresh.assert_awaited_once()
 
-    async def test_ax_success_marker_is_verified_under_lock_before_full_state_refresh(self):
+    async def test_ax_success_marker_is_verified_under_lock_before_full_state_refresh(
+        self,
+    ):
         config, thermostat, coordinator = self.make_coordinator()
         thermostat._power_on = False
         thermostat._mode = -1
@@ -424,8 +538,16 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 return response({"success": "true"})
             if data["cmd"] == 1:
                 return response({"sn": thermostat.sn, "par": params})
-            return response({"sn": thermostat.sn, "t.1": "341", "t.5": "256",
-                             "m.1": "3", "f.16": "0", "f.0": "0"})
+            return response(
+                {
+                    "sn": thermostat.sn,
+                    "t.1": "341",
+                    "t.5": "256",
+                    "m.1": "3",
+                    "f.16": "0",
+                    "f.0": "0",
+                }
+            )
 
         async def refresh():
             self.assertFalse(coordinator._request_lock.locked())
@@ -435,12 +557,15 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         coordinator.async_request_refresh = AsyncMock(side_effect=refresh)
         with patch("requests.post", side_effect=post):
             await asyncio.wait_for(climate.async_set_hvac_mode(HVACMode.HEAT), 5)
-        self.assertEqual(requests_seen, [
-            {"sn": thermostat.sn, "par": params[:3]},
-            {"sn": thermostat.sn, "cmd": 1},
-            {"sn": thermostat.sn, "cmd": 1},
-            {"sn": thermostat.sn, "cmd": 4},
-        ])
+        self.assertEqual(
+            requests_seen,
+            [
+                {"sn": thermostat.sn, "par": params[:3]},
+                {"sn": thermostat.sn, "cmd": 1},
+                {"sn": thermostat.sn, "cmd": 1},
+                {"sn": thermostat.sn, "cmd": 4},
+            ],
+        )
         self.assertEqual(climate.hvac_mode, HVACMode.HEAT)
         self.assertEqual(thermostat._parameters[125], (7, "0"))
         self.assertEqual(thermostat.setpoint, 16)
@@ -448,26 +573,59 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(thermostat.last_update_error)
         coordinator.async_request_refresh.assert_awaited_once()
 
-    async def test_ax_success_marker_with_unchanged_settings_is_not_a_successful_write(self):
+    async def test_ax_success_marker_with_unchanged_settings_is_not_a_successful_write(
+        self,
+    ):
         # Observed on the kitchen AX: success=true, but power and setpoint unchanged.
         config, thermostat, coordinator = self.make_coordinator()
         thermostat._power_on = False
         thermostat._mode = -1
         thermostat._setpoint = 16
         climate = TerneoClimateEntity(coordinator, thermostat, config)
-        coordinator.async_request_refresh = AsyncMock(side_effect=coordinator.async_refresh)
-        with patch("requests.post", side_effect=[
-            response({"success": "true"}),
-            response({"sn": thermostat.sn, "par": [
-                [125, 7, "1"], [118, 7, "0"], [2, 2, "1"], [5, 1, "16"],
-            ]}),
-            response({"sn": thermostat.sn, "par": [
-                [125, 7, "1"], [118, 7, "0"], [2, 2, "1"], [5, 1, "16"],
-            ]}),
-            response({"sn": thermostat.sn, "t.1": "341", "t.5": "256",
-                      "m.1": "3", "f.16": "1", "f.0": "0"}),
-        ]) as http:
-            with self.assertRaisesRegex(HomeAssistantError, "did not confirm all requested"):
+        coordinator.async_request_refresh = AsyncMock(
+            side_effect=coordinator.async_refresh
+        )
+        with patch(
+            "requests.post",
+            side_effect=[
+                response({"success": "true"}),
+                response(
+                    {
+                        "sn": thermostat.sn,
+                        "par": [
+                            [125, 7, "1"],
+                            [118, 7, "0"],
+                            [2, 2, "1"],
+                            [5, 1, "16"],
+                        ],
+                    }
+                ),
+                response(
+                    {
+                        "sn": thermostat.sn,
+                        "par": [
+                            [125, 7, "1"],
+                            [118, 7, "0"],
+                            [2, 2, "1"],
+                            [5, 1, "16"],
+                        ],
+                    }
+                ),
+                response(
+                    {
+                        "sn": thermostat.sn,
+                        "t.1": "341",
+                        "t.5": "256",
+                        "m.1": "3",
+                        "f.16": "1",
+                        "f.0": "0",
+                    }
+                ),
+            ],
+        ) as http:
+            with self.assertRaisesRegex(
+                HomeAssistantError, "did not confirm all requested"
+            ):
                 await asyncio.wait_for(climate.async_set_hvac_mode(HVACMode.HEAT), 5)
         self.assertIsNone(thermostat.last_update_error)
         self.assertEqual(climate.hvac_mode, HVACMode.OFF)
@@ -478,9 +636,14 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(http.call_count, 4)
         self.assertEqual(sum("par" in c.kwargs["json"] for c in http.call_args_list), 1)
         coordinator.async_request_refresh.assert_awaited_once()
-        self.assertEqual(http.call_args_list[0].kwargs["json"]["par"], [
-            [125, 7, "0"], [118, 7, "0"], [2, 2, "1"],
-        ])
+        self.assertEqual(
+            http.call_args_list[0].kwargs["json"]["par"],
+            [
+                [125, 7, "0"],
+                [118, 7, "0"],
+                [2, 2, "1"],
+            ],
+        )
 
     async def test_failed_mode_readback_does_not_invent_target_state(self):
         config, thermostat, coordinator = self.make_coordinator()
@@ -488,7 +651,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         thermostat._mode = -1
         thermostat._mark_update_successful()
         climate = TerneoClimateEntity(coordinator, thermostat, config)
-        coordinator.async_request_refresh = AsyncMock(side_effect=coordinator.async_refresh)
+        coordinator.async_request_refresh = AsyncMock(
+            side_effect=coordinator.async_refresh
+        )
         with patch("requests.post", side_effect=requests.Timeout("offline")) as http:
             with self.assertRaisesRegex(HomeAssistantError, "outcome is unknown"):
                 await asyncio.wait_for(climate.async_set_hvac_mode(HVACMode.HEAT), 5)
@@ -506,7 +671,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             raise HomeAssistantError("readback failed")
 
         coordinator.async_request_refresh = AsyncMock(side_effect=refresh)
-        with patch("requests.post", return_value=response({"success": "block"})) as http:
+        with patch(
+            "requests.post", return_value=response({"success": "block"})
+        ) as http:
             with self.assertRaisesRegex(HomeAssistantError, "LAN control is blocked"):
                 await climate.async_set_hvac_mode(HVACMode.HEAT)
         http.assert_called_once()
@@ -529,9 +696,15 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         for preset, mode in ((PRESET_SCHEDULE, "0"), (PRESET_MANUAL, "1")):
             with self.subTest(preset=preset):
                 params = [[125, 7, "0"], [2, 2, mode]]
-                with patch("requests.post", return_value=response({
-                    "sn": thermostat.sn, "par": params,
-                })) as http:
+                with patch(
+                    "requests.post",
+                    return_value=response(
+                        {
+                            "sn": thermostat.sn,
+                            "par": params,
+                        }
+                    ),
+                ) as http:
                     await climate.async_set_preset_mode(preset)
                 http.assert_called_once()
                 self.assertEqual(http.call_args.kwargs["json"]["par"], params)
@@ -552,20 +725,29 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             if len(calls) == 1:
                 started.set()
                 if not release.wait(5):
-                    raise AssertionError("Timed out waiting to release the first HTTP request")
+                    raise AssertionError(
+                        "Timed out waiting to release the first HTTP request"
+                    )
             if "par" in data:
                 params.update({p[0]: p[:] for p in data["par"]})
             if data.get("cmd") == 4:
-                return response({
-                    "sn": thermostat.sn, "t.1": "368", "t.5": "400",
-                    "m.1": "0" if params[2][2] == "0" else "3", "f.0": "0", "f.16": params[125][2],
-                })
+                return response(
+                    {
+                        "sn": thermostat.sn,
+                        "t.1": "368",
+                        "t.5": "400",
+                        "m.1": "0" if params[2][2] == "0" else "3",
+                        "f.0": "0",
+                        "f.16": params[125][2],
+                    }
+                )
             return response({"sn": thermostat.sn, "par": list(params.values())})
 
         tasks = []
         with patch("requests.post", side_effect=post):
             initial = asyncio.create_task(
-                coordinator._async_update_data() if polling
+                coordinator._async_update_data()
+                if polling
                 else climate.async_set_hvac_mode(HVACMode.HEAT)
             )
             tasks.append(initial)
@@ -577,7 +759,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                     initial.cancel()
                     await asyncio.sleep(0)
                     self.assertFalse(initial.done())
-                off = asyncio.create_task(coordinator.async_execute_command(thermostat.turn_off))
+                off = asyncio.create_task(
+                    coordinator.async_execute_command(thermostat.turn_off)
+                )
                 tasks.append(off)
                 if not polling and not cancel:
                     tasks.append(asyncio.create_task(coordinator._async_update_data()))
@@ -587,7 +771,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(off.done())
             finally:
                 release.set()
-                results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), 5
+                )
         if cancel:
             self.assertIsInstance(results[0], asyncio.CancelledError)
         else:
@@ -598,7 +784,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([c.get("cmd") for c in calls[:2]], [1, 4])
             self.assertEqual(calls[2]["par"], [[125, 7, "1"]])
         else:
-            self.assertEqual(calls[0]["par"], [[125, 7, "0"], [118, 7, "0"], [2, 2, "1"]])
+            self.assertEqual(
+                calls[0]["par"], [[125, 7, "0"], [118, 7, "0"], [2, 2, "1"]]
+            )
             self.assertEqual(calls[1]["par"], [[125, 7, "1"]])
         if cancel:
             coordinator.async_request_refresh.assert_not_awaited()
@@ -631,12 +819,16 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(self.hass, "async_add_executor_job", side_effect=executor):
             first_task = asyncio.create_task(
-                first_coordinator.async_execute_command(first.set_hvac_mode, HVACMode.HEAT)
+                first_coordinator.async_execute_command(
+                    first.set_hvac_mode, HVACMode.HEAT
+                )
             )
             try:
                 await asyncio.wait_for(started.wait(), 2)
                 await asyncio.wait_for(
-                    second_coordinator.async_execute_command(second.set_hvac_mode, HVACMode.COOL),
+                    second_coordinator.async_execute_command(
+                        second.set_hvac_mode, HVACMode.COOL
+                    ),
                     2,
                 )
                 self.assertFalse(first_task.done())
@@ -658,14 +850,18 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(self.hass, "async_add_executor_job", side_effect=executor):
             initial = asyncio.create_task(
-                coordinator.async_execute_command(thermostat.set_hvac_mode, HVACMode.HEAT)
+                coordinator.async_execute_command(
+                    thermostat.set_hvac_mode, HVACMode.HEAT
+                )
             )
             queued = None
             try:
                 await asyncio.wait_for(started.wait(), 2)
                 initial.cancel()
                 await asyncio.sleep(0)
-                queued = asyncio.create_task(coordinator.async_execute_command(thermostat.turn_off))
+                queued = asyncio.create_task(
+                    coordinator.async_execute_command(thermostat.turn_off)
+                )
                 await asyncio.sleep(0)
                 self.assertTrue(coordinator._request_lock.locked())
                 self.assertFalse(queued.done())
@@ -689,6 +885,7 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 )
         http.assert_not_called()
         coordinator.async_request_refresh.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

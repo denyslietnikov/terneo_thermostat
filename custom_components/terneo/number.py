@@ -1,9 +1,10 @@
 """Number platform for Terneo/Welrok thermostat."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from homeassistant.components.number import (
     NumberDeviceClass,
@@ -11,7 +12,7 @@ from homeassistant.components.number import (
     NumberEntityDescription,
     NumberMode,
 )
-from homeassistant.const import UnitOfTemperature, UnitOfPower, UnitOfTime
+from homeassistant.const import UnitOfPower, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -26,7 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True, kw_only=True)
 class TerneoNumberEntityDescription(NumberEntityDescription):
     """Describes Terneo number entity."""
-    
+
     value_fn: Callable[[TerneoThermostat], float | None]
     set_fn: Callable[[TerneoThermostat, float], bool]
     new_version_only: bool = False
@@ -165,7 +166,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.BOX,
         value_fn=lambda t: t.min_temp_advanced,
-        set_fn=lambda t, v: t.set_advanced_floor_limits(int(v), t.max_temp_advanced or 45),
+        set_fn=lambda t, v: t.set_advanced_floor_limits(
+            int(v), t.max_temp_advanced or 45
+        ),
         new_version_only=True,
         entity_registry_enabled_default=False,
     ),
@@ -180,7 +183,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.BOX,
         value_fn=lambda t: t.max_temp_advanced,
-        set_fn=lambda t, v: t.set_advanced_floor_limits(t.min_temp_advanced or 0, int(v)),
+        set_fn=lambda t, v: t.set_advanced_floor_limits(
+            t.min_temp_advanced or 0, int(v)
+        ),
         new_version_only=True,
         entity_registry_enabled_default=False,
     ),
@@ -254,7 +259,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.BOX,
         value_fn=lambda t: t.night_bright_start,
-        set_fn=lambda t, v: t.set_night_brightness_time(int(v), t.night_bright_end or 480),
+        set_fn=lambda t, v: t.set_night_brightness_time(
+            int(v), t.night_bright_end or 480
+        ),
         entity_registry_enabled_default=False,
     ),
     TerneoNumberEntityDescription(
@@ -268,7 +275,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.BOX,
         value_fn=lambda t: t.night_bright_end,
-        set_fn=lambda t, v: t.set_night_brightness_time(t.night_bright_start or 0, int(v)),
+        set_fn=lambda t, v: t.set_night_brightness_time(
+            t.night_bright_start or 0, int(v)
+        ),
         entity_registry_enabled_default=False,
     ),
     TerneoNumberEntityDescription(
@@ -281,7 +290,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.SLIDER,
         value_fn=lambda t: t.button_minus_cor,
-        set_fn=lambda t, v: t.set_button_corrections(int(v), t.button_menu_cor or 0, t.button_plus_cor or 0),
+        set_fn=lambda t, v: t.set_button_corrections(
+            int(v), t.button_menu_cor or 0, t.button_plus_cor or 0
+        ),
         entity_registry_enabled_default=False,
     ),
     TerneoNumberEntityDescription(
@@ -294,7 +305,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.SLIDER,
         value_fn=lambda t: t.button_menu_cor,
-        set_fn=lambda t, v: t.set_button_corrections(t.button_minus_cor or 0, int(v), t.button_plus_cor or 0),
+        set_fn=lambda t, v: t.set_button_corrections(
+            t.button_minus_cor or 0, int(v), t.button_plus_cor or 0
+        ),
         entity_registry_enabled_default=False,
     ),
     TerneoNumberEntityDescription(
@@ -307,7 +320,9 @@ NUMBER_DESCRIPTIONS: tuple[TerneoNumberEntityDescription, ...] = (
         native_step=1,
         mode=NumberMode.SLIDER,
         value_fn=lambda t: t.button_plus_cor,
-        set_fn=lambda t, v: t.set_button_corrections(t.button_minus_cor or 0, t.button_menu_cor or 0, int(v)),
+        set_fn=lambda t, v: t.set_button_corrections(
+            t.button_minus_cor or 0, t.button_menu_cor or 0, int(v)
+        ),
         entity_registry_enabled_default=False,
     ),
     TerneoNumberEntityDescription(
@@ -356,7 +371,7 @@ async def async_setup_entry(
         # Skip new version only numbers for old devices
         if description.new_version_only and not thermostat.is_new_version:
             continue
-        
+
         entities.append(TerneoNumberEntity(coordinator, thermostat, entry, description))
 
     async_add_entities(entities)
@@ -380,7 +395,7 @@ class TerneoNumberEntity(CoordinatorEntity[TerneoCoordinator], NumberEntity):
         self._thermostat = thermostat
         self._entry = entry
         self.entity_description = description
-        
+
         self._attr_unique_id = f"{thermostat.sn}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, thermostat.sn)},
@@ -399,7 +414,8 @@ class TerneoNumberEntity(CoordinatorEntity[TerneoCoordinator], NumberEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         return (
-            super().available and self._thermostat.available
+            super().available
+            and self._thermostat.available
             and self._thermostat.settings_available
         )
 

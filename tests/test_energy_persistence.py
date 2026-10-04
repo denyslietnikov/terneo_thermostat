@@ -1,25 +1,38 @@
 """Heating-counter accounting and HA Store lifecycle tests; device HTTP is mocked."""
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 import json
+import unittest
+from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 from types import MappingProxyType, SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import homeassistant  # noqa: F401
+import requests
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_FINAL_WRITE,
+    EVENT_HOMEASSISTANT_STOP,
+)
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.util.file import WriteError
-import requests
 
-from custom_components.terneo import async_setup_entry, async_unload_entry, async_update_options
-from custom_components.terneo.const import DEVICE_TYPE_NEW, DEVICE_TYPE_OLD, DOMAIN, ParamNum
+from custom_components.terneo import (
+    async_setup_entry,
+    async_unload_entry,
+    async_update_options,
+)
+from custom_components.terneo.const import (
+    DEVICE_TYPE_NEW,
+    DEVICE_TYPE_OLD,
+    DOMAIN,
+    ParamNum,
+)
 from custom_components.terneo.coordinator import ENERGY_SAVE_INTERVAL, TerneoCoordinator
 from custom_components.terneo.sensor import SENSOR_DESCRIPTIONS, TerneoSensorEntity
 from custom_components.terneo.thermostat import TerneoThermostat
@@ -34,10 +47,17 @@ def response(data):
 
 def entry(serial="test-private-serial", host="192.0.2.1", options=None):
     return ConfigEntry(
-        version=1, minor_version=1, domain=DOMAIN, title=serial,
-        data={"host": host, "serial": serial}, options=options or {},
-        source="user", unique_id=serial, discovery_keys=MappingProxyType({}),
-        subentries_data=[], state=ConfigEntryState.SETUP_IN_PROGRESS,
+        version=1,
+        minor_version=1,
+        domain=DOMAIN,
+        title=serial,
+        data={"host": host, "serial": serial},
+        options=options or {},
+        source="user",
+        unique_id=serial,
+        discovery_keys=MappingProxyType({}),
+        subentries_data=[],
+        state=ConfigEntryState.SETUP_IN_PROGRESS,
     )
 
 
@@ -45,9 +65,14 @@ class EnergyAccountingTests(unittest.TestCase):
     def setUp(self):
         self.clock = 100.0
         self.wall_clock = 10000.0
-        self.time = patch("custom_components.terneo.thermostat.time", new=SimpleNamespace(
-            monotonic=lambda: self.clock, time=lambda: self.wall_clock, sleep=lambda _: None,
-        ))
+        self.time = patch(
+            "custom_components.terneo.thermostat.time",
+            new=SimpleNamespace(
+                monotonic=lambda: self.clock,
+                time=lambda: self.wall_clock,
+                sleep=lambda _: None,
+            ),
+        )
         self.time.start()
         self.addCleanup(self.time.stop)
         self.thermostat = TerneoThermostat("test", "192.0.2.1")
@@ -59,9 +84,13 @@ class EnergyAccountingTests(unittest.TestCase):
 
     def test_first_observation_never_backfills_heating(self):
         self.sample()
-        self.assertEqual(self.thermostat.energy_counters, {
-            "heating_energy_kwh": 0.0, "heating_time_seconds": 0.0,
-        })
+        self.assertEqual(
+            self.thermostat.energy_counters,
+            {
+                "heating_energy_kwh": 0.0,
+                "heating_time_seconds": 0.0,
+            },
+        )
 
     def test_on_off_intervals_use_previous_sample_for_both_profiles(self):
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
@@ -73,8 +102,12 @@ class EnergyAccountingTests(unittest.TestCase):
                 self.sample(False, 30)
                 self.sample(False, 60)
                 self.sample(True, 30)
-                self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 90)
-                self.assertAlmostEqual(self.thermostat.energy_counters["heating_energy_kwh"], 0.025)
+                self.assertEqual(
+                    self.thermostat.energy_counters["heating_time_seconds"], 90
+                )
+                self.assertAlmostEqual(
+                    self.thermostat.energy_counters["heating_energy_kwh"], 0.025
+                )
 
     def test_heating_time_does_not_require_positive_wattage(self):
         for value in (None, "0", "-1"):
@@ -86,15 +119,22 @@ class EnergyAccountingTests(unittest.TestCase):
                     self.thermostat._parameters[ParamNum.POWER] = (4, value)
                 self.sample()
                 self.sample(elapsed=60)
-                self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 60)
-                self.assertEqual(self.thermostat.energy_counters["heating_energy_kwh"], 0)
+                self.assertEqual(
+                    self.thermostat.energy_counters["heating_time_seconds"], 60
+                )
+                self.assertEqual(
+                    self.thermostat.energy_counters["heating_energy_kwh"], 0
+                )
 
     def test_power_changes_apply_only_to_subsequent_observed_intervals(self):
         self.sample()
         self.thermostat._parameters[ParamNum.POWER] = (4, "150")
         self.sample(elapsed=60)
         self.sample(elapsed=60)
-        self.assertAlmostEqual(self.thermostat.energy_counters["heating_energy_kwh"], (1000 + 1500) * 60 / 3600000)
+        self.assertAlmostEqual(
+            self.thermostat.energy_counters["heating_energy_kwh"],
+            (1000 + 1500) * 60 / 3600000,
+        )
         self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 120)
 
     def test_unknown_wattage_is_not_backfilled_when_configured_later(self):
@@ -104,7 +144,9 @@ class EnergyAccountingTests(unittest.TestCase):
         self.sample(elapsed=60)
         self.assertEqual(self.thermostat.energy_counters["heating_energy_kwh"], 0)
         self.sample(elapsed=60)
-        self.assertAlmostEqual(self.thermostat.energy_counters["heating_energy_kwh"], 1 / 60)
+        self.assertAlmostEqual(
+            self.thermostat.energy_counters["heating_energy_kwh"], 1 / 60
+        )
         self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 120)
 
     def test_wall_clock_changes_do_not_change_elapsed_heating(self):
@@ -114,17 +156,25 @@ class EnergyAccountingTests(unittest.TestCase):
         self.wall_clock += 172800
         self.sample(elapsed=30)
         self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 60)
-        self.assertAlmostEqual(self.thermostat.energy_counters["heating_energy_kwh"], 1 / 60)
+        self.assertAlmostEqual(
+            self.thermostat.energy_counters["heating_energy_kwh"], 1 / 60
+        )
 
-    def test_invalid_or_long_monotonic_intervals_are_skipped_then_tracking_resumes(self):
+    def test_invalid_or_long_monotonic_intervals_are_skipped_then_tracking_resumes(
+        self,
+    ):
         for elapsed in (0, -30, 301):
             with self.subTest(elapsed=elapsed):
                 self.thermostat.reset_energy_counter()
                 self.sample()
                 self.sample(elapsed=elapsed)
-                self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 0)
+                self.assertEqual(
+                    self.thermostat.energy_counters["heating_time_seconds"], 0
+                )
                 self.sample(elapsed=30)
-                self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 30)
+                self.assertEqual(
+                    self.thermostat.energy_counters["heating_time_seconds"], 30
+                )
 
     def test_missing_relay_status_breaks_interval_without_inventing_an_off_state(self):
         self.sample()
@@ -153,9 +203,13 @@ class EnergyAccountingTests(unittest.TestCase):
         self.sample()
         for invalid in ("2", "-1", "true", True):
             with self.subTest(value=invalid):
-                with patch("requests.post", side_effect=[
-                    response({"par": [[125, 7, "0"]]}), response({"f.0": invalid}),
-                ]):
+                with patch(
+                    "requests.post",
+                    side_effect=[
+                        response({"par": [[125, 7, "0"]]}),
+                        response({"f.0": invalid}),
+                    ],
+                ):
                     self.assertFalse(self.thermostat.update())
                 self.assertTrue(self.thermostat.relay_state)
                 self.assertIsNone(self.thermostat._last_relay_update)
@@ -169,7 +223,10 @@ class EnergyAccountingTests(unittest.TestCase):
         self.sample()
         self.assertEqual(self.thermostat.energy_counters, saved)
         self.sample(elapsed=30)
-        self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], saved["heating_time_seconds"] + 30)
+        self.assertEqual(
+            self.thermostat.energy_counters["heating_time_seconds"],
+            saved["heating_time_seconds"] + 30,
+        )
         copy = self.thermostat.energy_counters
         copy["heating_energy_kwh"] = 999
         self.assertNotEqual(self.thermostat.energy_counters, copy)
@@ -179,7 +236,10 @@ class EnergyAccountingTests(unittest.TestCase):
         self.thermostat.restore_energy_counters(valid)
         invalid = [None, [], {}, {"heating_energy_kwh": 1}]
         for field in valid:
-            invalid.extend({**valid, field: value} for value in (True, "1", -1, float("nan"), float("inf"), 10**1000))
+            invalid.extend(
+                {**valid, field: value}
+                for value in (True, "1", -1, float("nan"), float("inf"), 10**1000)
+            )
         for data in invalid:
             with self.subTest(data=data):
                 with self.assertRaisesRegex(ValueError, "Invalid stored"):
@@ -208,9 +268,13 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.coordinators = []
         self.other_instances = []
         self.clock = 100.0
-        self.time = patch("custom_components.terneo.thermostat.time", new=SimpleNamespace(
-            monotonic=lambda: self.clock, sleep=lambda _: None,
-        ))
+        self.time = patch(
+            "custom_components.terneo.thermostat.time",
+            new=SimpleNamespace(
+                monotonic=lambda: self.clock,
+                sleep=lambda _: None,
+            ),
+        )
         self.time.start()
         self.addCleanup(self.time.stop)
 
@@ -235,17 +299,32 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         params = [[125, 7, "0"], [2, 2, "1"]]
         if power is not None:
             params.append([17, 4, power])
-        with patch("requests.post", side_effect=[
-            response({"sn": coordinator.thermostat.sn, "par": params}),
-            response({"sn": coordinator.thermostat.sn, "t.1": "336", "t.5": "256", "m.1": "3", "f.0": relay}),
-        ]):
+        with patch(
+            "requests.post",
+            side_effect=[
+                response({"sn": coordinator.thermostat.sn, "par": params}),
+                response(
+                    {
+                        "sn": coordinator.thermostat.sn,
+                        "t.1": "336",
+                        "t.5": "256",
+                        "m.1": "3",
+                        "f.0": relay,
+                    }
+                ),
+            ],
+        ):
             await coordinator.async_refresh()
         self.assertTrue(coordinator.last_update_success)
 
-    async def test_actual_store_survives_a_new_ha_instance_without_downtime_or_double_counting(self):
+    async def test_actual_store_survives_a_new_ha_instance_without_downtime_or_double_counting(
+        self,
+    ):
         config, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
-        thermostat.restore_energy_counters({"heating_energy_kwh": 1.23456789, "heating_time_seconds": 42.123456})
+        thermostat.restore_energy_counters(
+            {"heating_energy_kwh": 1.23456789, "heating_time_seconds": 42.123456}
+        )
         await self.poll(coordinator)
         self.clock += 60
         await self.poll(coordinator)
@@ -254,7 +333,9 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         restarted_hass = HomeAssistant(self.temp.name)
         restarted_hass.config_entries = MagicMock()
         self.other_instances.append(restarted_hass)
-        _, restored, new = self.make_coordinator(entry(host="192.0.2.2"), restarted_hass)
+        _, restored, new = self.make_coordinator(
+            entry(host="192.0.2.2"), restarted_hass
+        )
         self.assertNotEqual(config.entry_id, new.config_entry.entry_id)
         await new.async_restore_energy_counters()
         self.assertEqual(restored.energy_counters, saved)
@@ -263,65 +344,99 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.energy_counters, saved)
         self.clock += 30
         await self.poll(new)
-        self.assertEqual(restored.energy_counters["heating_time_seconds"], saved["heating_time_seconds"] + 30)
-        self.assertAlmostEqual(restored.energy_counters["heating_energy_kwh"], saved["heating_energy_kwh"] + 1 / 120)
+        self.assertEqual(
+            restored.energy_counters["heating_time_seconds"],
+            saved["heating_time_seconds"] + 30,
+        )
+        self.assertAlmostEqual(
+            restored.energy_counters["heating_energy_kwh"],
+            saved["heating_energy_kwh"] + 1 / 120,
+        )
 
-    async def test_setup_restores_before_first_state_and_supports_maximum_poll_interval(self):
-        config, thermostat, seed = self.make_coordinator(entry(options={"scan_interval": 300}))
+    async def test_setup_restores_before_first_state_and_supports_maximum_poll_interval(
+        self,
+    ):
+        config, thermostat, seed = self.make_coordinator(
+            entry(options={"scan_interval": 300})
+        )
         await seed.async_restore_energy_counters()
         saved = {"heating_energy_kwh": 8.123456, "heating_time_seconds": 4567.89}
         thermostat.restore_energy_counters(saved)
         await seed.async_shutdown()
 
         async def forward(actual_entry, platforms):
-            self.assertEqual(actual_entry.runtime_data.thermostat.energy_counters, saved)
-            self.assertEqual(actual_entry.runtime_data.thermostat._max_heating_interval, 600)
+            self.assertEqual(
+                actual_entry.runtime_data.thermostat.energy_counters, saved
+            )
+            self.assertEqual(
+                actual_entry.runtime_data.thermostat._max_heating_interval, 600
+            )
 
         self.hass.config_entries.async_forward_entry_setups.side_effect = forward
-        with patch("requests.post", side_effect=[
-            response({"par": [[125, 7, "0"], [17, 4, "100"]]}), response({"f.0": "1"}),
-        ]):
+        with patch(
+            "requests.post",
+            side_effect=[
+                response({"par": [[125, 7, "0"], [17, 4, "100"]]}),
+                response({"f.0": "1"}),
+            ],
+        ):
             self.assertTrue(await async_setup_entry(self.hass, config))
         coordinator = config.runtime_data
         self.coordinators.append(coordinator)
         self.assertIsNotNone(coordinator._unsub_energy_save)
         self.clock += 301
         await self.poll(coordinator)
-        self.assertEqual(coordinator.thermostat.energy_counters["heating_time_seconds"], saved["heating_time_seconds"] + 301)
+        self.assertEqual(
+            coordinator.thermostat.energy_counters["heating_time_seconds"],
+            saved["heating_time_seconds"] + 301,
+        )
 
     async def test_device_identity_isolation_and_safe_storage_key(self):
         _, first, coordinator = self.make_coordinator(entry("serial/one"))
         _, second, other = self.make_coordinator(entry("serial/two"))
         await coordinator.async_restore_energy_counters()
-        first.restore_energy_counters({"heating_energy_kwh": 5, "heating_time_seconds": 123})
+        first.restore_energy_counters(
+            {"heating_energy_kwh": 5, "heating_time_seconds": 123}
+        )
         await coordinator.async_save_energy_counters()
         await other.async_restore_energy_counters()
         self.assertEqual(second.energy_counters["heating_energy_kwh"], 0)
         self.assertNotEqual(coordinator._energy_store.key, other._energy_store.key)
         self.assertNotIn("serial", coordinator._energy_store.key)
         self.assertNotIn("/", coordinator._energy_store.key)
-        self.assertEqual(await coordinator._energy_store.async_load(), first.energy_counters)
+        self.assertEqual(
+            await coordinator._energy_store.async_load(), first.energy_counters
+        )
 
-    async def test_periodic_save_is_independent_of_poll_frequency_and_stops_on_unload(self):
+    async def test_periodic_save_is_independent_of_poll_frequency_and_stops_on_unload(
+        self,
+    ):
         _, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
         cancel = MagicMock()
-        with patch("custom_components.terneo.coordinator.async_track_time_interval", return_value=cancel) as interval:
+        with patch(
+            "custom_components.terneo.coordinator.async_track_time_interval",
+            return_value=cancel,
+        ) as interval:
             coordinator.async_start_energy_persistence()
             coordinator.async_start_energy_persistence()
         interval.assert_called_once()
         self.assertEqual(interval.call_args.args[2], ENERGY_SAVE_INTERVAL)
         periodic_save = interval.call_args.args[1]
-        with patch.object(coordinator._energy_store, "async_save", wraps=coordinator._energy_store.async_save) as save:
+        with patch.object(
+            coordinator._energy_store,
+            "async_save",
+            wraps=coordinator._energy_store.async_save,
+        ) as save:
             for _ in range(10):
                 self.clock += 30
                 await self.poll(coordinator)
             save.assert_not_awaited()
-            await periodic_save(datetime.now(timezone.utc))
+            await periodic_save(datetime.now(UTC))
             save.assert_awaited_once_with(thermostat.energy_counters)
             await coordinator.async_shutdown()
             self.assertEqual(save.await_count, 2)
-            await periodic_save(datetime.now(timezone.utc))
+            await periodic_save(datetime.now(UTC))
             await coordinator.async_shutdown()
             self.assertEqual(save.await_count, 2)
         cancel.assert_called_once()
@@ -346,24 +461,38 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         _, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
         coordinator.async_start_energy_persistence()
-        thermostat.restore_energy_counters({"heating_energy_kwh": 2.3456, "heating_time_seconds": 345.67})
+        thermostat.restore_energy_counters(
+            {"heating_energy_kwh": 2.3456, "heating_time_seconds": 345.67}
+        )
         self.hass.set_state(CoreState.stopping)
-        with patch.object(coordinator._energy_store, "_async_write_data", wraps=coordinator._energy_store._async_write_data) as write:
+        with patch.object(
+            coordinator._energy_store,
+            "_async_write_data",
+            wraps=coordinator._energy_store._async_write_data,
+        ) as write:
             self.hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
             await self.hass.async_block_till_done()
             write.assert_not_awaited()
             self.hass.bus.async_fire(EVENT_HOMEASSISTANT_FINAL_WRITE)
             await self.hass.async_block_till_done()
             write.assert_awaited_once()
-        self.assertEqual(await coordinator._energy_store.async_load(), thermostat.energy_counters)
+        self.assertEqual(
+            await coordinator._energy_store.async_load(), thermostat.energy_counters
+        )
         self.hass.set_state(CoreState.not_running)
 
     async def test_failed_disk_write_retains_totals_and_next_save_retries(self):
         _, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
-        thermostat.restore_energy_counters({"heating_energy_kwh": 2.3456, "heating_time_seconds": 345.67})
+        thermostat.restore_energy_counters(
+            {"heating_energy_kwh": 2.3456, "heating_time_seconds": 345.67}
+        )
         saved = thermostat.energy_counters
-        with patch.object(coordinator._energy_store, "_async_write_data", side_effect=WriteError("disk unavailable")):
+        with patch.object(
+            coordinator._energy_store,
+            "_async_write_data",
+            side_effect=WriteError("disk unavailable"),
+        ):
             await coordinator.async_save_energy_counters()
         self.assertEqual(thermostat.energy_counters, saved)
         await coordinator.async_save_energy_counters()
@@ -372,7 +501,9 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_options_reload_and_unload_restore_identical_totals(self):
         config, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
-        thermostat.restore_energy_counters({"heating_energy_kwh": 7.4321, "heating_time_seconds": 6543.21})
+        thermostat.restore_energy_counters(
+            {"heating_energy_kwh": 7.4321, "heating_time_seconds": 6543.21}
+        )
         await async_update_options(self.hass, config)
         self.hass.config_entries.async_reload.assert_awaited_once_with(config.entry_id)
         self.assertTrue(await async_unload_entry(self.hass, config))
@@ -385,7 +516,9 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         config, _, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
         self.hass.config_entries.async_unload_platforms.return_value = False
-        with patch.object(coordinator._energy_store, "async_save", new_callable=AsyncMock) as save:
+        with patch.object(
+            coordinator._energy_store, "async_save", new_callable=AsyncMock
+        ) as save:
             self.assertFalse(await async_unload_entry(self.hass, config))
         save.assert_not_awaited()
         self.assertFalse(coordinator._energy_shutdown_complete)
@@ -402,7 +535,9 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         await coordinator.async_shutdown()
         self.assertEqual(await coordinator._energy_store.async_load(), invalid)
 
-    async def test_offline_setup_keeps_existing_store_without_scheduling_periodic_writes(self):
+    async def test_offline_setup_keeps_existing_store_without_scheduling_periodic_writes(
+        self,
+    ):
         config, thermostat, seed = self.make_coordinator()
         await seed.async_restore_energy_counters()
         saved = {"heating_energy_kwh": 3, "heating_time_seconds": 100}
@@ -419,11 +554,15 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         await coordinator.async_restore_energy_counters()
         started = asyncio.Event()
         release = asyncio.Event()
+
         async def executor(command, *args):
             started.set()
             await release.wait()
-            thermostat.restore_energy_counters({"heating_energy_kwh": 4, "heating_time_seconds": 80})
+            thermostat.restore_energy_counters(
+                {"heating_energy_kwh": 4, "heating_time_seconds": 80}
+            )
             return True
+
         with patch.object(coordinator, "_async_execute_request", side_effect=executor):
             poll = asyncio.create_task(coordinator._async_update_data())
             await started.wait()
@@ -433,7 +572,9 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await poll
         await saving
-        self.assertEqual(await coordinator._energy_store.async_load(), thermostat.energy_counters)
+        self.assertEqual(
+            await coordinator._energy_store.async_load(), thermostat.energy_counters
+        )
 
     async def test_unexpected_poll_failure_breaks_heating_interval(self):
         _, thermostat, coordinator = self.make_coordinator()
@@ -446,34 +587,54 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         await self.poll(coordinator)
         self.assertEqual(thermostat.energy_counters["heating_time_seconds"], 0)
 
-    async def test_explicit_counter_reset_persists_zero_without_changing_sensor_identity(self):
+    async def test_explicit_counter_reset_persists_zero_without_changing_sensor_identity(
+        self,
+    ):
         config, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
-        thermostat.restore_energy_counters({"heating_energy_kwh": 3, "heating_time_seconds": 3600})
+        thermostat.restore_energy_counters(
+            {"heating_energy_kwh": 3, "heating_time_seconds": 3600}
+        )
         await coordinator.async_save_energy_counters()
         descriptions = {d.key: d for d in SENSOR_DESCRIPTIONS}
-        sensors = [TerneoSensorEntity(coordinator, thermostat, config, descriptions[key])
-                   for key in ("heating_energy", "heating_time")]
+        sensors = [
+            TerneoSensorEntity(coordinator, thermostat, config, descriptions[key])
+            for key in ("heating_energy", "heating_time")
+        ]
         before = [sensor.unique_id for sensor in sensors]
         thermostat.reset_energy_counter()
         await coordinator.async_save_energy_counters()
         _, restored, other = self.make_coordinator(config)
         await other.async_restore_energy_counters()
-        self.assertEqual(restored.energy_counters, {"heating_energy_kwh": 0, "heating_time_seconds": 0})
+        self.assertEqual(
+            restored.energy_counters,
+            {"heating_energy_kwh": 0, "heating_time_seconds": 0},
+        )
         self.assertEqual([sensor.unique_id for sensor in sensors], before)
-        self.assertTrue(all(sensor.state_class is SensorStateClass.TOTAL_INCREASING for sensor in sensors))
+        self.assertTrue(
+            all(
+                sensor.state_class is SensorStateClass.TOTAL_INCREASING
+                for sensor in sensors
+            )
+        )
         self.assertEqual(sensors[0].native_unit_of_measurement, "kWh")
         self.assertEqual(sensors[1].device_class, SensorDeviceClass.DURATION)
         self.assertEqual(sensors[1].native_unit_of_measurement, "h")
 
-    async def test_heating_time_sensor_is_available_without_power_but_energy_is_not(self):
+    async def test_heating_time_sensor_is_available_without_power_but_energy_is_not(
+        self,
+    ):
         config, thermostat, coordinator = self.make_coordinator()
         await self.poll(coordinator, power=None)
         self.clock += 60
         await self.poll(coordinator, power=None)
         descriptions = {d.key: d for d in SENSOR_DESCRIPTIONS}
-        heating_time = TerneoSensorEntity(coordinator, thermostat, config, descriptions["heating_time"])
-        energy = TerneoSensorEntity(coordinator, thermostat, config, descriptions["heating_energy"])
+        heating_time = TerneoSensorEntity(
+            coordinator, thermostat, config, descriptions["heating_time"]
+        )
+        energy = TerneoSensorEntity(
+            coordinator, thermostat, config, descriptions["heating_energy"]
+        )
         self.assertTrue(heating_time.available)
         self.assertGreater(heating_time.native_value, 0)
         self.assertFalse(energy.available)

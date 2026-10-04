@@ -1,24 +1,25 @@
 """Connection diagnostics regression tests without physical device requests."""
+
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
-from datetime import datetime, timedelta, timezone
 import json
+import unittest
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
-import unittest
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import homeassistant  # noqa: F401
+import requests
 from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
-import requests
 
 from custom_components.terneo.const import DEVICE_TYPE_NEW, DEVICE_TYPE_OLD, DOMAIN
 from custom_components.terneo.coordinator import TerneoCoordinator
@@ -51,8 +52,11 @@ def response(payload, status=200):
 class ConnectionMetricsTests(unittest.TestCase):
     def setUp(self):
         self.clock = 100.0
-        self.now = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
-        self.monotonic = patch("custom_components.terneo.thermostat.time.monotonic", side_effect=lambda: self.clock)
+        self.now = datetime(2026, 10, 3, 12, tzinfo=UTC)
+        self.monotonic = patch(
+            "custom_components.terneo.thermostat.time.monotonic",
+            side_effect=lambda: self.clock,
+        )
         self.sleep = patch("custom_components.terneo.thermostat.time.sleep")
         self.datetime = patch("custom_components.terneo.thermostat.datetime")
         self.monotonic.start()
@@ -81,7 +85,9 @@ class ConnectionMetricsTests(unittest.TestCase):
         successful_at = self.thermostat.last_successful_update
         for failures, available in ((1, True), (2, True), (3, False)):
             self.clock += 30
-            with patch("requests.post", side_effect=requests.Timeout("private exception")):
+            with patch(
+                "requests.post", side_effect=requests.Timeout("private exception")
+            ):
                 self.assertFalse(self.thermostat.update())
             data = self.thermostat.connection_diagnostics
             self.assertEqual(data["last_successful_update"], successful_at)
@@ -108,7 +114,10 @@ class ConnectionMetricsTests(unittest.TestCase):
         with patch("requests.post", side_effect=requests.Timeout("private")):
             self.assertFalse(self.thermostat.update())
         self.clock += 10
-        with patch("requests.post", return_value=response({"sn": SERIAL, "par": [[125, 7, "1"]]})):
+        with patch(
+            "requests.post",
+            return_value=response({"sn": SERIAL, "par": [[125, 7, "1"]]}),
+        ):
             self.assertTrue(self.thermostat.turn_off())
         with patch("requests.post", return_value=response(PARAMS)):
             self.assertTrue(self.thermostat.get_parameters())
@@ -131,20 +140,29 @@ class ConnectionMetricsTests(unittest.TestCase):
 
     def test_request_duration_excludes_rate_limiting(self):
         self.sleep.side_effect = None
+
         def sleep(delay):
             self.clock += delay
+
         def post(*args, **kwargs):
             self.clock += 0.375
             return response(PARAMS)
-        with patch("custom_components.terneo.thermostat.time.sleep", side_effect=sleep) as wait:
+
+        with patch(
+            "custom_components.terneo.thermostat.time.sleep", side_effect=sleep
+        ) as wait:
             with patch("requests.post", side_effect=post):
                 self.assertTrue(self.thermostat.get_parameters())
         wait.assert_called_once_with(1.0)
         self.assertEqual(self.thermostat.last_request_duration, 0.375)
-        self.assertEqual(self.thermostat.connection_diagnostics["last_request"]["http_status"], 200)
+        self.assertEqual(
+            self.thermostat.connection_diagnostics["last_request"]["http_status"], 200
+        )
         self.assertIsNone(self.thermostat.last_successful_update)
 
-    def test_transport_http_json_and_protocol_errors_are_distinct_for_both_profiles(self):
+    def test_transport_http_json_and_protocol_errors_are_distinct_for_both_profiles(
+        self,
+    ):
         invalid_json = response({})
         invalid_json._content = b'{"par":'
         cases = (
@@ -157,13 +175,17 @@ class ConnectionMetricsTests(unittest.TestCase):
         )
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             for result, category, status in cases:
-                with self.subTest(profile=profile, category=category, result=type(result).__name__):
+                with self.subTest(
+                    profile=profile, category=category, result=type(result).__name__
+                ):
                     thermostat = TerneoThermostat(SERIAL, HOST, profile)
+
                     def post(*args, **kwargs):
                         self.clock += 0.25
                         if isinstance(result, Exception):
                             raise result
                         return result
+
                     with patch("requests.post", side_effect=post):
                         self.assertFalse(thermostat.update())
                     data = thermostat.connection_diagnostics
@@ -190,9 +212,13 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.assertEqual(self.thermostat.floor_temperature, 21)
 
     def test_legacy_verification_timeout_is_not_double_counted_as_protocol_error(self):
-        with patch("requests.post", side_effect=[
-            response({"success": "true"}), requests.Timeout("private"),
-        ]) as post:
+        with patch(
+            "requests.post",
+            side_effect=[
+                response({"success": "true"}),
+                requests.Timeout("private"),
+            ],
+        ) as post:
             self.assertFalse(self.thermostat.turn_off())
         data = self.thermostat.connection_diagnostics
         self.assertEqual(post.call_count, 2)
@@ -204,7 +230,10 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.assertEqual(data["consecutive_update_failures"], 0)
 
     def test_protocol_acknowledgement_failure_counts_once(self):
-        with patch("requests.post", return_value=response({"sn": SERIAL, "par": [[125, 7, "0"]]})):
+        with patch(
+            "requests.post",
+            return_value=response({"sn": SERIAL, "par": [[125, 7, "0"]]}),
+        ):
             self.assertFalse(self.thermostat.turn_off())
         data = self.thermostat.connection_diagnostics
         self.assertEqual(data["last_request"]["kind"], "parameter_write")
@@ -216,12 +245,18 @@ class ConnectionMetricsTests(unittest.TestCase):
         data = self.thermostat.connection_diagnostics
         data["request_error_counts"]["timeout"] = 999
         data["last_request"]["kind"] = "changed"
-        self.assertEqual(self.thermostat.connection_diagnostics["request_error_counts"]["timeout"], 0)
-        self.assertIsNone(self.thermostat.connection_diagnostics["last_request"]["kind"])
+        self.assertEqual(
+            self.thermostat.connection_diagnostics["request_error_counts"]["timeout"], 0
+        )
+        self.assertIsNone(
+            self.thermostat.connection_diagnostics["last_request"]["kind"]
+        )
 
 
 class RedactionTests(unittest.TestCase):
-    def test_nested_keys_values_urls_and_identifiers_are_redacted_without_mutation(self):
+    def test_nested_keys_values_urls_and_identifiers_are_redacted_without_mutation(
+        self,
+    ):
         secret = "private-token/with spaces"
         data = {
             "entry": {"host": HOST, "serial": SERIAL, "title": TITLE},
@@ -237,9 +272,19 @@ class RedactionTests(unittest.TestCase):
         before = deepcopy(data)
         result = _redact_diagnostics(data, [SERIAL, TITLE])
         serialized = json.dumps(result)
-        for private in (HOST, SERIAL, SERIAL.lower(), TITLE, secret, quote(secret, safe=""),
-                        "private-password", "other-private-host", "unknown-private.example",
-                        "user-directory", "private-server.example"):
+        for private in (
+            HOST,
+            SERIAL,
+            SERIAL.lower(),
+            TITLE,
+            secret,
+            quote(secret, safe=""),
+            "private-password",
+            "other-private-host",
+            "unknown-private.example",
+            "user-directory",
+            "private-server.example",
+        ):
             self.assertNotIn(private, serialized)
         self.assertEqual(result["entry"]["host"], REDACTED)
         self.assertEqual(result["nested"][0]["Authorization"], REDACTED)
@@ -248,7 +293,13 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(data, before)
 
     def test_numeric_identifiers_and_empty_values_are_safe(self):
-        data = {"sn": 123456789, "copy": 123456789, "host": "", "token": None, "count": 3}
+        data = {
+            "sn": 123456789,
+            "copy": 123456789,
+            "host": "",
+            "token": None,
+            "count": 3,
+        }
         result = _redact_diagnostics(data, [])
         self.assertEqual(result["sn"], REDACTED)
         self.assertEqual(result["copy"], REDACTED)
@@ -256,12 +307,18 @@ class RedactionTests(unittest.TestCase):
 
     def test_diagnostic_translations_match_descriptions_and_enum_states(self):
         root = Path(__file__).resolve().parents[1] / "custom_components" / "terneo"
-        for filename in (root / "strings.json", *(root / "translations").glob("*.json")):
+        for filename in (
+            root / "strings.json",
+            *(root / "translations").glob("*.json"),
+        ):
             translations = json.loads(filename.read_text())["entity"]["sensor"]
             for description in CONNECTION_SENSOR_DESCRIPTIONS:
                 self.assertIn(description.translation_key, translations)
                 if description.options:
-                    self.assertEqual(set(translations[description.translation_key]["state"]), set(description.options))
+                    self.assertEqual(
+                        set(translations[description.translation_key]["state"]),
+                        set(description.options),
+                    )
 
 
 class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
@@ -270,11 +327,17 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.hass = HomeAssistant(self.temp.name)
         self.hass.config_entries = MagicMock()
         self.entry = ConfigEntry(
-            version=1, minor_version=1, domain=DOMAIN, title=TITLE,
+            version=1,
+            minor_version=1,
+            domain=DOMAIN,
+            title=TITLE,
             data={"host": HOST, "serial": SERIAL, "device_type": DEVICE_TYPE_OLD},
             options={"scan_interval": 30, "timeout": 5, "show_advanced_sensors": True},
-            source="user", unique_id=SERIAL, discovery_keys=MappingProxyType({}),
-            subentries_data=[], state=ConfigEntryState.LOADED,
+            source="user",
+            unique_id=SERIAL,
+            discovery_keys=MappingProxyType({}),
+            subentries_data=[],
+            state=ConfigEntryState.LOADED,
         )
         self.thermostat = TerneoThermostat(SERIAL, HOST)
         self.coordinator = TerneoCoordinator(self.hass, self.entry, self.thermostat)
@@ -301,14 +364,20 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["entry"]["data"]["host"], REDACTED)
         self.assertEqual(result["entry"]["options"]["scan_interval"], 30)
         self.assertEqual(result["runtime"]["connection"]["request_count"], 2)
-        self.assertEqual(result["runtime"]["connection"]["protocol"]["parameter_count"], 3)
-        self.assertIsInstance(result["runtime"]["connection"]["last_successful_update"], str)
+        self.assertEqual(
+            result["runtime"]["connection"]["protocol"]["parameter_count"], 3
+        )
+        self.assertIsInstance(
+            result["runtime"]["connection"]["last_successful_update"], str
+        )
         self.assertTrue(result["runtime"]["coordinator"]["last_update_success"])
 
     async def test_export_waits_for_device_lock_without_polling(self):
         async with self.coordinator._request_lock:
             with patch("requests.post") as post:
-                snapshot = asyncio.create_task(async_get_config_entry_diagnostics(self.hass, self.entry))
+                snapshot = asyncio.create_task(
+                    async_get_config_entry_diagnostics(self.hass, self.entry)
+                )
                 await asyncio.sleep(0)
                 self.assertFalse(snapshot.done())
                 post.assert_not_called()
@@ -326,20 +395,43 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(HOST, json.dumps(result))
 
     async def test_export_never_includes_raw_responses_or_exception_text(self):
-        self.thermostat._status = {"sn": SERIAL, "error": "private raw payload", "nested": {"token": "secret"}}
+        self.thermostat._status = {
+            "sn": SERIAL,
+            "error": "private raw payload",
+            "nested": {"token": "secret"},
+        }
         self.thermostat._parameters = {999: (0, "private parameter payload")}
-        with patch.object(self.thermostat, "update", side_effect=RuntimeError(f"private runtime {HOST}")):
+        with patch.object(
+            self.thermostat,
+            "update",
+            side_effect=RuntimeError(f"private runtime {HOST}"),
+        ):
             await self.coordinator.async_refresh()
         result = await async_get_config_entry_diagnostics(self.hass, self.entry)
         serialized = json.dumps(result)
-        for private in (HOST, SERIAL, "private raw payload", "private parameter payload", "private runtime", "secret"):
+        for private in (
+            HOST,
+            SERIAL,
+            "private raw payload",
+            "private parameter payload",
+            "private runtime",
+            "secret",
+        ):
             self.assertNotIn(private, serialized)
-        self.assertEqual(result["runtime"]["coordinator"]["last_exception_type"], "RuntimeError")
+        self.assertEqual(
+            result["runtime"]["coordinator"]["last_exception_type"], "RuntimeError"
+        )
 
-    async def test_diagnostic_sensors_remain_available_through_outage_and_recovery(self):
-        diagnostic = [TerneoSensorEntity(self.coordinator, self.thermostat, self.entry, d)
-                      for d in CONNECTION_SENSOR_DESCRIPTIONS]
-        ordinary = TerneoSensorEntity(self.coordinator, self.thermostat, self.entry, SENSOR_DESCRIPTIONS[0])
+    async def test_diagnostic_sensors_remain_available_through_outage_and_recovery(
+        self,
+    ):
+        diagnostic = [
+            TerneoSensorEntity(self.coordinator, self.thermostat, self.entry, d)
+            for d in CONNECTION_SENSOR_DESCRIPTIONS
+        ]
+        ordinary = TerneoSensorEntity(
+            self.coordinator, self.thermostat, self.entry, SENSOR_DESCRIPTIONS[0]
+        )
         for entity in diagnostic:
             self.assertEqual(entity.entity_category, EntityCategory.DIAGNOSTIC)
             self.assertFalse(entity.entity_registry_enabled_default)
@@ -364,7 +456,9 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostic[2].native_value, 0)
         self.assertEqual(diagnostic[4].native_value, "none")
 
-    async def test_both_profiles_create_diagnostic_sensors_without_network_requests(self):
+    async def test_both_profiles_create_diagnostic_sensors_without_network_requests(
+        self,
+    ):
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             self.thermostat._is_new_version = profile == DEVICE_TYPE_NEW
             add_entities = MagicMock()
@@ -372,9 +466,13 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                 await async_setup_entry(self.hass, self.entry, add_entities)
             post.assert_not_called()
             created = add_entities.call_args.args[0]
-            diagnostics = [e for e in created if e.entity_category is EntityCategory.DIAGNOSTIC]
+            diagnostics = [
+                e for e in created if e.entity_category is EntityCategory.DIAGNOSTIC
+            ]
             self.assertEqual(len(diagnostics), 5)
             self.assertEqual(len({e.unique_id for e in created}), len(created))
-            self.assertFalse(any(e.entity_registry_enabled_default for e in diagnostics))
+            self.assertFalse(
+                any(e.entity_registry_enabled_default for e in diagnostics)
+            )
             self.assertEqual(diagnostics[0].device_class, SensorDeviceClass.TIMESTAMP)
             self.assertEqual(diagnostics[3].native_unit_of_measurement, "s")

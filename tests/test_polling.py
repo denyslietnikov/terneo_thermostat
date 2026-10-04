@@ -1,20 +1,21 @@
 """Split-polling policy with real HA coordinators and deterministic HTTP timing."""
+
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 import json
+import unittest
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MappingProxyType, SimpleNamespace
-import unittest
 from unittest.mock import MagicMock, patch
 
+import requests
+import voluptuous as vol
 from homeassistant.components.climate import HVACMode
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
-import requests
-import voluptuous as vol
 
 from custom_components.terneo.climate import TerneoClimateEntity
 from custom_components.terneo.config_flow import TerneoOptionsFlowHandler
@@ -44,16 +45,38 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.commands = []
         self.parameters_error = False
         self.status_error = False
-        self.params = [[125, 7, "0"], [23, 2, "2"], [17, 4, "100"],
-                       [3, 2, "0"], [118, 7, "0"], [26, 2, "35"], [27, 2, "5"]]
-        self.status = {"t.1": "368", "t.2": "352", "t.5": "400",
-                       "m.0": "0", "m.1": "3", "m.5": "0", "f.0": "1", "f.16": "0"}
-        self.device_time = patch("custom_components.terneo.thermostat.time", new=SimpleNamespace(
-            monotonic=lambda: self.clock, sleep=self.sleep,
-        ))
-        self.coordinator_time = patch("custom_components.terneo.coordinator.time", new=SimpleNamespace(
-            monotonic=lambda: self.clock,
-        ))
+        self.params = [
+            [125, 7, "0"],
+            [23, 2, "2"],
+            [17, 4, "100"],
+            [3, 2, "0"],
+            [118, 7, "0"],
+            [26, 2, "35"],
+            [27, 2, "5"],
+        ]
+        self.status = {
+            "t.1": "368",
+            "t.2": "352",
+            "t.5": "400",
+            "m.0": "0",
+            "m.1": "3",
+            "m.5": "0",
+            "f.0": "1",
+            "f.16": "0",
+        }
+        self.device_time = patch(
+            "custom_components.terneo.thermostat.time",
+            new=SimpleNamespace(
+                monotonic=lambda: self.clock,
+                sleep=self.sleep,
+            ),
+        )
+        self.coordinator_time = patch(
+            "custom_components.terneo.coordinator.time",
+            new=SimpleNamespace(
+                monotonic=lambda: self.clock,
+            ),
+        )
         self.http = patch("requests.post", side_effect=self.post)
         for mock in (self.device_time, self.coordinator_time, self.http):
             mock.start()
@@ -93,10 +116,17 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
     def make_coordinator(self, profile=DEVICE_TYPE_OLD, options=None):
         self.profile = profile
         config = ConfigEntry(
-            version=1, minor_version=1, domain=DOMAIN, title="test",
-            data={"host": "192.0.2.1", "serial": "test"}, options=options or {},
-            source="user", unique_id="test", discovery_keys=MappingProxyType({}),
-            subentries_data=[], state=ConfigEntryState.LOADED,
+            version=1,
+            minor_version=1,
+            domain=DOMAIN,
+            title="test",
+            data={"host": "192.0.2.1", "serial": "test"},
+            options=options or {},
+            source="user",
+            unique_id="test",
+            discovery_keys=MappingProxyType({}),
+            subentries_data=[],
+            state=ConfigEntryState.LOADED,
         )
         client = TerneoThermostat("test", "192.0.2.1", profile)
         coordinator = TerneoCoordinator(self.hass, config, client)
@@ -126,12 +156,18 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(data["settings"]["age_seconds"], 30)
                 self.assertAlmostEqual(data["status"]["age_seconds"], 0)
                 self.assertTrue(data["settings"]["available"])
-                self.assertAlmostEqual(client.energy_counters["heating_time_seconds"], 30.1)
-                self.assertAlmostEqual(client.energy_counters["heating_energy_kwh"], 30.1 / 3600)
+                self.assertAlmostEqual(
+                    client.energy_counters["heating_time_seconds"], 30.1
+                )
+                self.assertAlmostEqual(
+                    client.energy_counters["heating_energy_kwh"], 30.1 / 3600
+                )
 
     async def test_hourly_request_count_and_latency_comparison(self):
         for interval, expected in ((30, 240), (300, 132)):
-            _, client, coordinator = self.make_coordinator(options={"settings_scan_interval": interval})
+            _, client, coordinator = self.make_coordinator(
+                options={"settings_scan_interval": interval}
+            )
             started = len(self.commands)
             durations = []
             origin = self.clock
@@ -156,8 +192,17 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await self.poll(coordinator), [1, 4])
                 climate = TerneoClimateEntity(coordinator, client, config)
                 self.params[1] = [23, 2, "8"]
-                self.status.update({"t.1": "384", "t.5": "432", "m.0": "1",
-                                    "m.5": "1", "m.1": "0", "f.16": "1", "f.0": "0"})
+                self.status.update(
+                    {
+                        "t.1": "384",
+                        "t.5": "432",
+                        "m.0": "1",
+                        "m.5": "1",
+                        "m.1": "0",
+                        "f.16": "1",
+                        "f.0": "0",
+                    }
+                )
                 self.assertEqual(await self.poll(coordinator), [4])
                 self.assertEqual(client.floor_temperature, 24)
                 self.assertEqual(client.setpoint, 27)
@@ -208,14 +253,38 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["settings"]["error_category"], "timeout")
         self.assertGreater(data["settings"]["age_seconds"], 300)
         self.assertAlmostEqual(data["status"]["age_seconds"], 0)
-        self.assertTrue(self.sensor(config, client, coordinator, "floor_temperature").available)
-        self.assertTrue(self.sensor(config, client, coordinator, "heating_active").available)
-        self.assertFalse(self.sensor(config, client, coordinator, "current_power").available)
-        self.assertFalse(self.sensor(config, client, coordinator, "manual_floor_temp").available)
-        self.assertFalse(TerneoNumberEntity(coordinator, client, config, NUMBER_DESCRIPTIONS[0]).available)
-        self.assertFalse(TerneoSelectEntity(coordinator, client, config, SELECT_DESCRIPTIONS[0]).available)
-        self.assertTrue(TerneoSwitchEntity(coordinator, client, config, SWITCH_DESCRIPTIONS[0]).available)
-        self.assertFalse(TerneoSwitchEntity(coordinator, client, config, SWITCH_DESCRIPTIONS[1]).available)
+        self.assertTrue(
+            self.sensor(config, client, coordinator, "floor_temperature").available
+        )
+        self.assertTrue(
+            self.sensor(config, client, coordinator, "heating_active").available
+        )
+        self.assertFalse(
+            self.sensor(config, client, coordinator, "current_power").available
+        )
+        self.assertFalse(
+            self.sensor(config, client, coordinator, "manual_floor_temp").available
+        )
+        self.assertFalse(
+            TerneoNumberEntity(
+                coordinator, client, config, NUMBER_DESCRIPTIONS[0]
+            ).available
+        )
+        self.assertFalse(
+            TerneoSelectEntity(
+                coordinator, client, config, SELECT_DESCRIPTIONS[0]
+            ).available
+        )
+        self.assertTrue(
+            TerneoSwitchEntity(
+                coordinator, client, config, SWITCH_DESCRIPTIONS[0]
+            ).available
+        )
+        self.assertFalse(
+            TerneoSwitchEntity(
+                coordinator, client, config, SWITCH_DESCRIPTIONS[1]
+            ).available
+        )
         climate = TerneoClimateEntity(coordinator, client, config)
         self.assertTrue(climate.available)
         self.assertFalse(climate.extra_state_attributes["settings_confirmed"])
@@ -224,11 +293,18 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.parameters_error = False
         self.assertEqual(await self.poll(coordinator), [4])
         self.assertFalse(client.settings_available)
-        self.assertEqual(client.energy_counters["heating_energy_kwh"], totals["heating_energy_kwh"])
-        self.assertGreater(client.energy_counters["heating_time_seconds"], totals["heating_time_seconds"])
+        self.assertEqual(
+            client.energy_counters["heating_energy_kwh"], totals["heating_energy_kwh"]
+        )
+        self.assertGreater(
+            client.energy_counters["heating_time_seconds"],
+            totals["heating_time_seconds"],
+        )
         self.assertEqual(await self.poll(coordinator, after=300), [1, 4])
         self.assertTrue(client.settings_available)
-        self.assertTrue(self.sensor(config, client, coordinator, "current_power").available)
+        self.assertTrue(
+            self.sensor(config, client, coordinator, "current_power").available
+        )
 
     async def test_setup_does_not_bootstrap_from_status_without_settings(self):
         _, client, coordinator = self.make_coordinator()
@@ -288,13 +364,20 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.status_error = True
         self.assertEqual(await self.poll(coordinator, after=300), [1, 4])
         self.assertEqual(client.brightness, 2)
-        self.assertEqual(client.connection_diagnostics["settings"]["last_successful_update"], before)
+        self.assertEqual(
+            client.connection_diagnostics["settings"]["last_successful_update"], before
+        )
         self.status_error = False
         self.assertEqual(await self.poll(coordinator), [1, 4])
         self.assertEqual(client.brightness, 9)
 
-    async def test_successful_writes_force_full_refresh_and_keep_legacy_verification(self):
-        for profile, write_requests in ((DEVICE_TYPE_OLD, ["write", 1]), (DEVICE_TYPE_NEW, ["write"])):
+    async def test_successful_writes_force_full_refresh_and_keep_legacy_verification(
+        self,
+    ):
+        for profile, write_requests in (
+            (DEVICE_TYPE_OLD, ["write", 1]),
+            (DEVICE_TYPE_NEW, ["write"]),
+        ):
             with self.subTest(profile=profile):
                 _, client, coordinator = self.make_coordinator(profile)
                 await self.poll(coordinator)
@@ -322,7 +405,9 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(coordinator, "_async_execute_request", side_effect=executor):
             poll = asyncio.create_task(coordinator.async_refresh())
             await started.wait()
-            write = asyncio.create_task(coordinator.async_execute_command(client.set_brightness, 7))
+            write = asyncio.create_task(
+                coordinator.async_execute_command(client.set_brightness, 7)
+            )
             await asyncio.sleep(0)
             self.assertFalse(write.done())
             release.set()
@@ -344,13 +429,17 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
                         await release.wait()
                     return command(*args)
 
-                with patch.object(self.hass, "async_add_executor_job", side_effect=executor):
+                with patch.object(
+                    self.hass, "async_add_executor_job", side_effect=executor
+                ):
                     polling = asyncio.create_task(coordinator._async_update_data())
                     await started.wait()
                     polling.cancel()
                     await asyncio.sleep(0)
                     polling.cancel()
-                    write = asyncio.create_task(coordinator.async_execute_command(client.set_brightness, 6))
+                    write = asyncio.create_task(
+                        coordinator.async_execute_command(client.set_brightness, 6)
+                    )
                     await asyncio.sleep(0)
                     self.assertFalse(polling.done())
                     self.assertFalse(write.done())
@@ -371,7 +460,10 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
                 self.status["t.1"] = "480"
                 await self.poll(coordinator)
                 self.assertEqual(client.floor_temperature, 23)
-                self.assertEqual(client.connection_diagnostics["last_refresh_error_category"], "protocol")
+                self.assertEqual(
+                    client.connection_diagnostics["last_refresh_error_category"],
+                    "protocol",
+                )
                 self.status[key] = previous
                 self.status["t.1"] = "368"
                 await self.poll(coordinator)
@@ -384,8 +476,15 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.poll(coordinator), [1, 4])
 
     async def test_interval_clamped_to_status_cadence_and_options_form_defaults(self):
-        config, _, coordinator = self.make_coordinator(options={"scan_interval": 300, "settings_scan_interval": 30})
-        self.assertEqual((await coordinator.async_get_diagnostics())["coordinator"]["settings_interval_seconds"], 300)
+        config, _, coordinator = self.make_coordinator(
+            options={"scan_interval": 300, "settings_scan_interval": 30}
+        )
+        self.assertEqual(
+            (await coordinator.async_get_diagnostics())["coordinator"][
+                "settings_interval_seconds"
+            ],
+            300,
+        )
         self.hass.config_entries.async_get_known_entry.return_value = config
         flow = TerneoOptionsFlowHandler()
         flow.hass = self.hass
@@ -400,11 +499,17 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"]["settings_scan_interval"], 600)
         default, _, _ = self.make_coordinator()
         self.hass.config_entries.async_get_known_entry.return_value = default
-        self.assertEqual((await flow.async_step_init())["data_schema"]({})["settings_scan_interval"], 300)
+        self.assertEqual(
+            (await flow.async_step_init())["data_schema"]({})["settings_scan_interval"],
+            300,
+        )
 
     async def test_options_labels_exist_in_all_translations(self):
         root = Path(__file__).parents[1] / "custom_components" / DOMAIN
-        for filename in (root / "strings.json", *(root / "translations").glob("*.json")):
+        for filename in (
+            root / "strings.json",
+            *(root / "translations").glob("*.json"),
+        ):
             data = json.loads(filename.read_text())
             options = data["options"]["step"]["init"]
             self.assertIn("settings_scan_interval", options["data"])

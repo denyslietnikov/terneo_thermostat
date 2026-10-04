@@ -32,6 +32,7 @@ class TerneoSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[TerneoThermostat], float | int | str | datetime | None]
     available_fn: Callable[[TerneoThermostat], bool] = lambda t: True
     new_version_only: bool = False
+    requires_settings: bool = False
 
 
 def get_sensor_type_name(thermostat: TerneoThermostat) -> str | None:
@@ -73,6 +74,7 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
     ),
     TerneoSensorEntityDescription(
         key="relay_on_time_limit",
+        requires_settings=True,
         translation_key="relay_on_time_limit",
         name="Continuous Heating Limit",
         icon="mdi:timer-alert",
@@ -82,6 +84,7 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
     ),
     TerneoSensorEntityDescription(
         key="sensor_type",
+        requires_settings=True,
         translation_key="sensor_type_display",
         name="Sensor Type",
         icon="mdi:thermometer",
@@ -90,6 +93,7 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
     ),
     TerneoSensorEntityDescription(
         key="ble_sensor_connected",
+        requires_settings=True,
         translation_key="ble_sensor_connected",
         name="Wireless Sensor",
         icon="mdi:bluetooth-connect",
@@ -99,6 +103,7 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
     ),
     TerneoSensorEntityDescription(
         key="manual_floor_temp",
+        requires_settings=True,
         translation_key="manual_floor_temp",
         name="Manual Floor Setpoint",
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -109,6 +114,7 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
     ),
     TerneoSensorEntityDescription(
         key="manual_air_temp",
+        requires_settings=True,
         translation_key="manual_air_temp",
         name="Manual Air Setpoint",
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -141,6 +147,7 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
     ),
     TerneoSensorEntityDescription(
         key="current_power",
+        requires_settings=True,
         translation_key="current_power",
         name="Current Power",
         device_class=SensorDeviceClass.POWER,
@@ -273,6 +280,8 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
         if self.entity_description.entity_category is EntityCategory.DIAGNOSTIC:
             return True
         if not super().available or not self._thermostat.available:
+            return False
+        if self.entity_description.requires_settings and not self._thermostat.settings_available:
             return False
         return self.entity_description.available_fn(self._thermostat)
 

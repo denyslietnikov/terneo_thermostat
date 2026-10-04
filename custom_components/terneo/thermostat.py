@@ -72,6 +72,13 @@ class TerneoThermostat:
         self._last_successful_update_monotonic: float | None = None
         self._last_refresh_error: str | None = None
         self._last_refresh_error_category: str | None = None
+        self._settings_available = False
+        self._last_successful_settings_update: datetime | None = None
+        self._last_successful_settings_monotonic: float | None = None
+        self._last_settings_error: str | None = None
+        self._last_settings_error_category: str | None = None
+        self._last_successful_status_update: datetime | None = None
+        self._last_successful_status_monotonic: float | None = None
         self._request_count = 0
         self._request_error_counts = dict.fromkeys(
             ("timeout", "transport", "http", "json", "protocol"), 0
@@ -221,14 +228,25 @@ class TerneoThermostat:
 
     def _mark_update_successful(self) -> None:
         """Mark a full data refresh as successful."""
-        self._available = True
-        self._has_state = True
-        self._consecutive_update_failures = 0
-        self._last_update_error = None
+        self._mark_status_successful()
+        self._settings_available = True
+        self._last_settings_error = None
+        self._last_settings_error_category = None
+        self._last_successful_settings_update = datetime.now(timezone.utc)
+        self._last_successful_settings_monotonic = time.monotonic()
         self._last_successful_update = datetime.now(timezone.utc)
         self._last_successful_update_monotonic = time.monotonic()
         self._last_refresh_error = None
         self._last_refresh_error_category = None
+
+    def _mark_status_successful(self) -> None:
+        """Confirm telemetry without advancing settings or full-refresh timestamps."""
+        self._available = True
+        self._has_state = True
+        self._consecutive_update_failures = 0
+        self._last_update_error = None
+        self._last_successful_status_update = datetime.now(timezone.utc)
+        self._last_successful_status_monotonic = time.monotonic()
 
     def _mark_update_failed(self) -> None:
         """Track failed refreshes without flapping availability on one miss."""
@@ -338,11 +356,14 @@ class TerneoThermostat:
             for key in ("t.1", "t.5", "t.2"):
                 if key in result:
                     float(result[key])
-            for key in ("m.1", "f.0", "f.16"):
+            for key in ("m.0", "m.1", "m.5", "f.0", "f.16"):
                 if key in result:
                     int(result[key])
-            if "f.0" in result and str(result["f.0"]) not in ("0", "1"):
-                raise ValueError("Invalid relay state")
+            for key in ("f.0", "f.16", "m.5"):
+                if key in result and str(result[key]) not in ("0", "1"):
+                    raise ValueError("Invalid binary status")
+            if "m.0" in result and str(result["m.0"]) not in ("0", "1", "2"):
+                raise ValueError("Invalid control type")
         except (TypeError, ValueError):
             return self._request_failed("Invalid status response")
         self._status = result
@@ -425,8 +446,21 @@ class TerneoThermostat:
 
     @property
     def consecutive_update_failures(self) -> int:
-        """Return consecutive failed full refreshes, not failed commands."""
+        """Return consecutive failed polling cycles, not failed commands."""
         return self._consecutive_update_failures
+
+    @property
+    def settings_available(self) -> bool:
+        """Whether cached settings have no subsequent parameter-read failure."""
+        return self._settings_available
+
+    @property
+    def fast_poll_supported(self) -> bool:
+        """Use status-only polling only with complete operating-state telemetry."""
+        required = ("t.2",) if self._is_new_version else ()
+        return all(key in self._status for key in (*required,
+            "t.1", "t.5", "m.0", "m.1", "m.5", "f.0", "f.16",
+        ))
 
     @property
     def last_refresh_error_category(self) -> str | None:
@@ -446,6 +480,24 @@ class TerneoThermostat:
             "has_state": self.has_state,
             "last_successful_update": self.last_successful_update,
             "cached_state_age_seconds": self.cached_state_age,
+            "settings": {
+                "available": self.settings_available,
+                "last_successful_update": self._last_successful_settings_update,
+                "age_seconds": (
+                    max(0.0, time.monotonic() - self._last_successful_settings_monotonic)
+                    if self._last_successful_settings_monotonic is not None else None
+                ),
+                "error": self._last_settings_error,
+                "error_category": self._last_settings_error_category,
+            },
+            "status": {
+                "last_successful_update": self._last_successful_status_update,
+                "age_seconds": (
+                    max(0.0, time.monotonic() - self._last_successful_status_monotonic)
+                    if self._last_successful_status_monotonic is not None else None
+                ),
+                "fast_poll_supported": self.fast_poll_supported,
+            },
             "consecutive_update_failures": self.consecutive_update_failures,
             "max_update_failures": self._max_update_failures,
             "last_refresh_error": self._last_refresh_error,
@@ -505,6 +557,8 @@ class TerneoThermostat:
     @property
     def control_type(self) -> int | None:
         """Current control type (floor/air/air with floor limit)."""
+        if "m.0" in self._status:
+            return int(self._status["m.0"])
         return self._get_param_value(ParamNum.CONTROL_TYPE)
 
     @property
@@ -523,6 +577,8 @@ class TerneoThermostat:
     @property
     def cooling_mode(self) -> bool | None:
         """Return if cooling mode is enabled (vs heating)."""
+        if "m.5" in self._status:
+            return int(self._status["m.5"]) == 1
         return self._get_param_value(ParamNum.COOLING_CONTROL_WAY)
 
     @property
@@ -1063,12 +1119,21 @@ class TerneoThermostat:
         ])
         return bool(result)
 
-    def update(self) -> bool:
+    def update(self, status_on_settings_failure: bool = False) -> bool:
         """Update all state from device."""
         # Publish parameters and status from the same successful polling cycle.
         previous_parameters = self._parameters
         params_result = self.get_parameters()
         if not params_result:
+            self._settings_available = False
+            self._last_settings_error = self._last_update_error
+            self._last_settings_error_category = self._last_request_error_category
+            if status_on_settings_failure and self.has_state:
+                self._last_refresh_error = self._last_update_error
+                self._last_refresh_error_category = self._last_request_error_category
+                self.break_heating_interval()
+                # One polling failure at most; healthy telemetry keeps its own grace.
+                return self.update_status()
             self._mark_update_failed()
             return False
         
@@ -1080,16 +1145,32 @@ class TerneoThermostat:
             return False
         
         # Parse status
+        self._settings_available = True
+        self._last_settings_error = None
+        self._last_settings_error_category = None
         self._parse_status(status_result)
-        
-        # Update power state from parameters
-        self._power_on = not self._get_param_value(ParamNum.POWER_OFF)
         
         self._mark_update_successful()
         return True
 
+    def update_status(self) -> bool:
+        """Refresh operating state using confirmed settings, never bootstrap with it."""
+        if not self._has_state:
+            return self.update()
+        status_result = self.get_status()
+        if not status_result:
+            self._mark_update_failed()
+            return False
+        self._parse_status(status_result)
+        self._mark_status_successful()
+        return True
+
     def _parse_status(self, data: dict) -> None:
         """Parse status response."""
+        self._power_on = (
+            int(data["f.16"]) == 0 if "f.16" in data
+            else not self._get_param_value(ParamNum.POWER_OFF)
+        )
         # Floor temperature (t.1 = raw * 16)
         if "t.1" in data:
             self._floor_temperature = float(data["t.1"]) / 16.0
@@ -1106,12 +1187,7 @@ class TerneoThermostat:
         if "m.1" in data:
             mode_value = int(data["m.1"])
             # Check power state
-            if "f.16" in data:
-                is_on = int(data["f.16"]) == 0
-            else:
-                is_on = not self._get_param_value(ParamNum.POWER_OFF)
-            
-            if not is_on:
+            if not self._power_on:
                 self._mode = -1  # Off
             else:
                 self._mode = mode_value
@@ -1145,7 +1221,9 @@ class TerneoThermostat:
                     self._heating_energy_kwh += energy_kwh
         
         self._last_relay_update = current_time
-        self._last_relay_power_watts = self.power_watts if new_relay_state else None
+        self._last_relay_power_watts = (
+            self.power_watts if new_relay_state and self._last_settings_error is None else None
+        )
 
     @property
     def energy_counters(self) -> dict[str, float]:

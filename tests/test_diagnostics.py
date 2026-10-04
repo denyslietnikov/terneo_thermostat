@@ -256,8 +256,8 @@ class RedactionTests(unittest.TestCase):
 
     def test_diagnostic_translations_match_descriptions_and_enum_states(self):
         root = Path(__file__).resolve().parents[1] / "custom_components" / "terneo"
-        for filename in ("strings.json", "translations/en.json", "translations/ru.json"):
-            translations = json.loads((root / filename).read_text())["entity"]["sensor"]
+        for filename in (root / "strings.json", *(root / "translations").glob("*.json")):
+            translations = json.loads(filename.read_text())["entity"]["sensor"]
             for description in CONNECTION_SENSOR_DESCRIPTIONS:
                 self.assertIn(description.translation_key, translations)
                 if description.options:

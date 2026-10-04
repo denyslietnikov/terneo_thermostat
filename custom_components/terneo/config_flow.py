@@ -19,6 +19,8 @@ from .const import (
     DEVICE_TYPE_NEW,
     DEFAULT_NAME,
     DEFAULT_TIMEOUT,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SETTINGS_SCAN_INTERVAL,
 )
 
 from .thermostat import TerneoThermostat
@@ -165,8 +167,14 @@ class TerneoOptionsFlowHandler(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         "scan_interval",
-                        default=self.config_entry.options.get("scan_interval", 30),
+                        default=self.config_entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL),
                     ): vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
+                    vol.Optional(
+                        "settings_scan_interval",
+                        default=self.config_entry.options.get(
+                            "settings_scan_interval", DEFAULT_SETTINGS_SCAN_INTERVAL
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
                     vol.Optional(
                         "timeout",
                         default=self.config_entry.options.get("timeout", DEFAULT_TIMEOUT),

@@ -185,7 +185,10 @@ class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return super().available and self._thermostat.available
+        return (
+            super().available and self._thermostat.available
+            and self._thermostat.settings_available
+        )
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""

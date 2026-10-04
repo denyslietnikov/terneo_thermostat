@@ -167,15 +167,16 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
             "control_type": self._get_control_type_name(),
             "relay_state": self._thermostat.relay_state,
             "floor_temperature": self._thermostat.floor_temperature,
+            "settings_confirmed": self._thermostat.settings_available,
         }
         
         if self._thermostat.is_new_version:
             attrs["air_temperature"] = self._thermostat.air_temperature
         
-        if self._thermostat.hysteresis is not None:
+        if self._thermostat.settings_available and self._thermostat.hysteresis is not None:
             attrs["hysteresis"] = self._thermostat.hysteresis
         
-        if self._thermostat.power_watts is not None:
+        if self._thermostat.settings_available and self._thermostat.power_watts is not None:
             attrs["power_watts"] = self._thermostat.power_watts
         
         return attrs

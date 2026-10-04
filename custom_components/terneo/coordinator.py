@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from hashlib import sha256
 import logging
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,7 +17,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import DEFAULT_SCAN_INTERVAL, DEFAULT_SETTINGS_SCAN_INTERVAL, DOMAIN
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +42,12 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         )
         self.thermostat = thermostat
         self._request_lock = asyncio.Lock()
+        self._settings_interval = max(
+            entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL),
+            entry.options.get("settings_scan_interval", DEFAULT_SETTINGS_SCAN_INTERVAL),
+        )
+        self._last_settings_attempt: float | None = None
+        self._force_full_refresh = True
         identity = sha256(thermostat.sn.encode()).hexdigest()
         self._energy_store: Store[dict[str, float]] = Store(
             hass, ENERGY_STORAGE_VERSION, f"{DOMAIN}.energy.{identity}",
@@ -132,8 +139,25 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
     async def _async_update_data(self) -> TerneoThermostat:
         async with self._request_lock:
             try:
-                success = await self._async_execute_request(self.thermostat.update)
+                fast_poll_supported = self.thermostat.fast_poll_supported
+                full_refresh = (
+                    self._force_full_refresh or not self.thermostat.has_state
+                    or not fast_poll_supported or not self.last_update_success
+                    or self.thermostat.consecutive_update_failures > 0
+                    or self._last_settings_attempt is None
+                    or time.monotonic() - self._last_settings_attempt >= self._settings_interval
+                )
+                if full_refresh:
+                    self._force_full_refresh = False
+                    # Limit settings retries even when status continues to work.
+                    self._last_settings_attempt = time.monotonic()
+                    success = await self._async_execute_request(
+                        self.thermostat.update, fast_poll_supported
+                    )
+                else:
+                    success = await self._async_execute_request(self.thermostat.update_status)
             except Exception:
+                self._force_full_refresh = True
                 self.thermostat.break_heating_interval()
                 raise
         if success or (self.thermostat.available and self.thermostat.has_state):
@@ -148,6 +172,8 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         """Expose failed commands to the UI and automation traces."""
         error = None
         async with self._request_lock:
+            # Also cover uncertain outcomes and cancelled callers: a write may apply.
+            self._force_full_refresh = True
             try:
                 success = await self._async_execute_request(command, *args)
             except ValueError as err:
@@ -179,6 +205,8 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
                         self.update_interval.total_seconds()
                         if self.update_interval is not None else None
                     ),
+                    "settings_interval_seconds": self._settings_interval,
+                    "full_refresh_pending": self._force_full_refresh,
                 },
                 "connection": self.thermostat.connection_diagnostics,
             }

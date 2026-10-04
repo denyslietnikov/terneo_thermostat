@@ -1,16 +1,15 @@
-# Terneo/Welrok Thermostat for Home Assistant
+# Terneo Thermostat for Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
 
-Custom integration for controlling Terneo/Welrok thermostats over the local network.
+Custom integration for controlling Terneo thermostats over the local network.
 
 ## Supported Devices
 
-- Legacy Terneo AX and OZ without an air sensor.
-- Newer OZ/AZ profiles with an air sensor.
+- Terneo AX with local API access.
 
-The device profile is detected during setup. Available features depend on the
-model and firmware; firmware-specific validation is documented in [PLAN.md](PLAN.md).
+Available features depend on firmware; device validation is documented in
+[PLAN.md](PLAN.md).
 
 ## Features
 
@@ -43,9 +42,9 @@ and restart Home Assistant.
    and enter the thermostat's IP address and serial number.
 3. Choose a device name and finish setup.
 
-Options: polling interval (default 30 seconds), request timeout (default 5 seconds),
-and advanced sensors. Connection diagnostic sensors are disabled by default and
-must be enabled individually in their entity settings.
+Options: status interval (default 30 seconds), settings interval (default 5 minutes),
+request timeout (default 5 seconds), and advanced sensors. Diagnostic sensors are
+disabled by default; enable them individually in their entity settings.
 
 ## Actions
 
@@ -60,6 +59,7 @@ These actions require an explicit entity, device, or area target.
 - **Cannot connect:** check the IP address, serial number, network, and local API access.
 - **Unavailable:** brief polling failures retain previous readings, which may be
   stale. Prolonged failures mark the device unavailable; polling restores it on recovery.
+  Failed settings reads affect configuration entities without blocking telemetry.
 - **Command failed:** check the actual state before retrying; a timed-out command
   may already have applied.
 - **Diagnostics:** enable connection sensors or select **Download diagnostics**

@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.components.climate import HVACAction, HVACMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.terneo import button, climate, number, select, sensor, switch
 from custom_components.terneo.const import (
@@ -31,6 +34,10 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.temp = TemporaryDirectory()
         self.hass = HomeAssistant(self.temp.name)
         self.hass.config_entries = MagicMock()
+        dr.async_setup(self.hass)
+        await dr.async_load(self.hass, load_empty=True)
+        await ar.async_load(self.hass, load_empty=True)
+        await er.async_load(self.hass, load_empty=True)
 
     async def asyncTearDown(self):
         await self.hass.async_block_till_done()
@@ -87,6 +94,10 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
                         [e.entity_description.key for e in entities],
                         [d.key for d in expected],
                     )
+                    if platform is switch:
+                        self.assertNotIn(
+                            "cooling_mode", [e.entity_description.key for e in entities]
+                        )
                     for entity in entities:
                         self.assertIs(entity.coordinator, coordinator)
                         self.assertEqual(
@@ -115,6 +126,11 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
                 entities = add.call_args.args[0]
                 self.assertEqual(len(entities), 1)
                 self.assertIsInstance(entities[0], entity_type)
+                if platform is climate:
+                    self.assertEqual(
+                        entities[0].hvac_modes,
+                        [HVACMode.OFF, HVACMode.HEAT, HVACMode.AUTO],
+                    )
 
     async def test_settings_commands_delegate_once_and_refresh(self):
         entry, thermostat, coordinator = self.make_entry(DEVICE_TYPE_NEW)

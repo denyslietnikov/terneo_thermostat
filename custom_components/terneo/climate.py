@@ -30,7 +30,7 @@ SUPPORT_FLAGS = (
     | ClimateEntityFeature.PRESET_MODE
 )
 
-HVAC_MODES = [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL, HVACMode.AUTO]
+HVAC_MODES = [HVACMode.OFF, HVACMode.HEAT, HVACMode.AUTO]
 
 PRESET_SCHEDULE = "schedule"
 PRESET_MANUAL = "manual"

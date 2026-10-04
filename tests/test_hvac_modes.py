@@ -21,7 +21,6 @@ from tests.http import FakeSession, Response
 MODE_PARAMETERS = {
     "off": [[125, 7, "1"]],
     "heat": [[125, 7, "0"], [118, 7, "0"], [2, 2, "1"]],
-    "cool": [[125, 7, "0"], [118, 7, "1"], [2, 2, "1"]],
     "auto": [[125, 7, "0"], [2, 2, "0"]],
 }
 
@@ -76,16 +75,13 @@ class HvacTransitionTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
-            for source in MODE_PARAMETERS:
+            for source in (*MODE_PARAMETERS, "cool"):
                 for target, params in MODE_PARAMETERS.items():
                     with self.subTest(
                         device_type=device_type, source=source, target=target
                     ):
                         params = deepcopy(params)
-                        if device_type == DEVICE_TYPE_NEW and target in (
-                            "heat",
-                            "cool",
-                        ):
+                        if device_type == DEVICE_TYPE_NEW and target == "heat":
                             params[-1][2] = "3"
                         thermostat = self.thermostat(device_type, source)
                         previous = snapshot(thermostat)
@@ -135,12 +131,23 @@ class HvacTransitionTests(unittest.IsolatedAsyncioTestCase):
         thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
         previous = snapshot(thermostat)
         with patch("tests.http.post") as post:
-            for mode in ("dry", "heat_cool", "invalid", None, True):
+            for mode in ("cool", "dry", "heat_cool", "invalid", None, True):
                 with self.subTest(mode=mode):
                     with self.assertRaises(ValueError):
                         await thermostat.set_hvac_mode(mode)
         post.assert_not_called()
         self.assertEqual(snapshot(thermostat), previous)
+
+    async def test_cooling_setter_rejects_enable_without_http_for_both_profiles(self):
+        for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
+            with self.subTest(profile=profile):
+                thermostat = self.thermostat(profile, "off")
+                previous = snapshot(thermostat)
+                with patch("tests.http.post") as post:
+                    with self.assertRaisesRegex(ValueError, "Cooling is not supported"):
+                        await thermostat.set_cooling_mode(True)
+                post.assert_not_called()
+                self.assertEqual(snapshot(thermostat), previous)
 
     async def test_presets_retain_power_mode_batch_without_changing_cooling(self):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
@@ -207,7 +214,6 @@ class HvacTransitionTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_legacy_manual_commands_write_one_not_telemetry_three(self):
         for command, args, params in (
             ("set_hvac_mode", ("heat",), MODE_PARAMETERS["heat"]),
-            ("set_hvac_mode", ("cool",), MODE_PARAMETERS["cool"]),
             ("set_mode", (OperationMode.MANUAL,), [[125, 7, "0"], [2, 2, "1"]]),
             ("set_setpoint", (27,), [[125, 7, "0"], [2, 2, "1"], [5, 1, "27"]]),
         ):

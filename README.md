@@ -14,7 +14,7 @@ Available features depend on firmware; device validation is documented in
 
 ## Features
 
-- Power, target temperature, heating/cooling, and schedule/manual modes.
+- Power, target temperature, heating, and schedule/manual modes.
 - Temperature, relay state, current power, heating time, and estimated energy.
 - Temperature limits, brightness, child lock, and other model-specific settings.
 - Connection diagnostics and Home Assistant diagnostics download.

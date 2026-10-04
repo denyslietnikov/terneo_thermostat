@@ -34,7 +34,11 @@ from custom_components.terneo.coordinator import TerneoCoordinator
 from custom_components.terneo.number import NUMBER_DESCRIPTIONS, TerneoNumberEntity
 from custom_components.terneo.select import SELECT_DESCRIPTIONS, TerneoSelectEntity
 from custom_components.terneo.sensor import SENSOR_DESCRIPTIONS, TerneoSensorEntity
-from custom_components.terneo.switch import SWITCH_DESCRIPTIONS, TerneoSwitchEntity
+from custom_components.terneo.switch import (
+    SWITCH_DESCRIPTIONS,
+    TerneoSwitchEntity,
+)
+from custom_components.terneo.switch import async_setup_entry as async_setup_switches
 from custom_components.terneo.thermostat import TerneoThermostat
 from tests.http import FakeSession, Response
 
@@ -166,6 +170,60 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             )
             .entity_id
         )
+
+    async def test_switch_setup_removes_only_its_obsolete_cooling_entity(self):
+        for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
+            with self.subTest(profile=profile):
+                config, thermostat, _ = self.make_coordinator(device_type=profile)
+                other, other_client, _ = self.make_coordinator("other")
+                registry = er.async_get(self.hass)
+                obsolete = registry.async_get_or_create(
+                    "switch",
+                    DOMAIN,
+                    f"{thermostat.sn}_cooling_mode",
+                    config_entry=config,
+                    suggested_object_id="renamed_cooling",
+                    disabled_by=er.RegistryEntryDisabler.USER
+                    if profile == DEVICE_TYPE_NEW
+                    else None,
+                )
+                power = registry.async_get_or_create(
+                    "switch",
+                    DOMAIN,
+                    f"{thermostat.sn}_power",
+                    config_entry=config,
+                )
+                other_cooling = registry.async_get_or_create(
+                    "switch",
+                    DOMAIN,
+                    f"{other_client.sn}_cooling_mode",
+                    config_entry=other,
+                )
+                add = MagicMock()
+                with patch("tests.http.post") as http:
+                    await async_setup_switches(self.hass, config, add)
+                    await async_setup_switches(self.hass, config, add)
+                http.assert_not_called()
+                self.assertIsNone(registry.async_get(obsolete.entity_id))
+                self.assertIsNotNone(registry.async_get(power.entity_id))
+                self.assertIsNotNone(registry.async_get(other_cooling.entity_id))
+                self.assertNotIn(
+                    "cooling_mode",
+                    [e.entity_description.key for e in add.call_args.args[0]],
+                )
+
+    async def test_switch_cleanup_preserves_matching_id_owned_by_another_entry(self):
+        config, thermostat, _ = self.make_coordinator()
+        other, _, _ = self.make_coordinator("other")
+        registry = er.async_get(self.hass)
+        foreign = registry.async_get_or_create(
+            "switch",
+            DOMAIN,
+            f"{thermostat.sn}_cooling_mode",
+            config_entry=other,
+        )
+        await async_setup_switches(self.hass, config, MagicMock())
+        self.assertIsNotNone(registry.async_get(foreign.entity_id))
 
     async def test_service_only_controls_selected_thermostat(self):
         first, thermostat, coordinator = self.make_coordinator()
@@ -409,7 +467,6 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         expected = {
             HVACMode.OFF: [[125, 7, "1"]],
             HVACMode.HEAT: [[125, 7, "0"], [118, 7, "0"], [2, 2, "3"]],
-            HVACMode.COOL: [[125, 7, "0"], [118, 7, "1"], [2, 2, "3"]],
             HVACMode.AUTO: [[125, 7, "0"], [2, 2, "0"]],
         }
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
@@ -417,7 +474,7 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(device_type=device_type, target=target):
                     params = [p[:] for p in params]
                     manual = "1" if device_type == DEVICE_TYPE_OLD else "3"
-                    if target in (HVACMode.HEAT, HVACMode.COOL):
+                    if target == HVACMode.HEAT:
                         params[-1][2] = manual
                     config, thermostat, coordinator = self.make_coordinator(
                         device_type=device_type
@@ -689,8 +746,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         climate = TerneoClimateEntity(coordinator, thermostat, config)
         coordinator.async_request_refresh = AsyncMock()
         with patch("tests.http.post") as http:
-            with self.assertRaises(ServiceValidationError):
-                await climate.async_set_hvac_mode(HVACMode.DRY)
+            for mode in (HVACMode.DRY, HVACMode.COOL):
+                with self.subTest(mode=mode), self.assertRaises(ServiceValidationError):
+                    await climate.async_set_hvac_mode(mode)
         http.assert_not_called()
         coordinator.async_request_refresh.assert_not_awaited()
 
@@ -829,12 +887,12 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(started.wait(), 2)
                 await asyncio.wait_for(
                     second_coordinator.async_execute_command(
-                        second.set_hvac_mode, HVACMode.COOL
+                        second.set_hvac_mode, HVACMode.AUTO
                     ),
                     2,
                 )
                 self.assertFalse(first_task.done())
-                second_command.assert_awaited_once_with(HVACMode.COOL)
+                second_command.assert_awaited_once_with(HVACMode.AUTO)
             finally:
                 release.set()
                 await asyncio.wait_for(first_task, 2)

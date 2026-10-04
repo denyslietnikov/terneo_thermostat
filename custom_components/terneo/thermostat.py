@@ -878,13 +878,13 @@ class TerneoThermostat:
                 [ParamNum.POWER_OFF, DataType.BOOL, "0"],
                 [ParamNum.MODE, DataType.UINT8, str(OperationMode.SCHEDULE)],
             ]
-        elif hvac_mode in ("heat", "cool"):
+        elif hvac_mode == "heat":
             params = [
                 [ParamNum.POWER_OFF, DataType.BOOL, "0"],
                 [
                     ParamNum.COOLING_CONTROL_WAY,
                     DataType.BOOL,
-                    "1" if hvac_mode == "cool" else "0",
+                    "0",
                 ],
                 [
                     ParamNum.MODE,
@@ -966,9 +966,11 @@ class TerneoThermostat:
         return bool(result)
 
     async def set_cooling_mode(self, enabled: bool) -> bool:
-        """Set cooling mode (vs heating)."""
+        """Allow restoring heating, but never enable cooling for a floor heater."""
+        if enabled:
+            raise ValueError("Cooling is not supported for floor heating")
         result = await self.set_parameters(
-            [[ParamNum.COOLING_CONTROL_WAY, DataType.BOOL, "1" if enabled else "0"]]
+            [[ParamNum.COOLING_CONTROL_WAY, DataType.BOOL, "0"]]
         )
         return bool(result)
 

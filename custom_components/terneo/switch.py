@@ -13,6 +13,7 @@ from homeassistant.components.switch import (
     SwitchEntityDescription,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -51,15 +52,6 @@ SWITCH_DESCRIPTIONS: tuple[TerneoSwitchEntityDescription, ...] = (
         value_fn=lambda t: t.children_lock,
         turn_on_fn=lambda t: t.set_children_lock(True),
         turn_off_fn=lambda t: t.set_children_lock(False),
-    ),
-    TerneoSwitchEntityDescription(
-        key="cooling_mode",
-        translation_key="cooling_mode",
-        name="Cooling Mode",
-        icon="mdi:snowflake",
-        value_fn=lambda t: t.cooling_mode,
-        turn_on_fn=lambda t: t.set_cooling_mode(True),
-        turn_off_fn=lambda t: t.set_cooling_mode(False),
     ),
     TerneoSwitchEntityDescription(
         key="pre_control",
@@ -130,6 +122,16 @@ async def async_setup_entry(
     """Set up Terneo switch entities from a config entry."""
     coordinator = entry.runtime_data
     thermostat = coordinator.thermostat
+
+    registry = er.async_get(hass)
+    obsolete_id = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{thermostat.sn}_cooling_mode"
+    )
+    if (
+        obsolete_id is not None
+        and registry.async_get(obsolete_id).config_entry_id == entry.entry_id
+    ):
+        registry.async_remove(obsolete_id)
 
     entities = []
     for description in SWITCH_DESCRIPTIONS:

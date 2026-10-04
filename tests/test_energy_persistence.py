@@ -11,7 +11,6 @@ from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import homeassistant  # noqa: F401
-import requests
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import (
@@ -36,10 +35,11 @@ from custom_components.terneo.const import (
 from custom_components.terneo.coordinator import ENERGY_SAVE_INTERVAL, TerneoCoordinator
 from custom_components.terneo.sensor import SENSOR_DESCRIPTIONS, TerneoSensorEntity
 from custom_components.terneo.thermostat import TerneoThermostat
+from tests.http import FakeSession, Response
 
 
 def response(data):
-    result = requests.Response()
+    result = Response()
     result.status_code = 200
     result._content = json.dumps(data).encode()
     return result
@@ -61,7 +61,7 @@ def entry(serial="test-private-serial", host="192.0.2.1", options=None):
     )
 
 
-class EnergyAccountingTests(unittest.TestCase):
+class EnergyAccountingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.clock = 100.0
         self.wall_clock = 10000.0
@@ -75,7 +75,7 @@ class EnergyAccountingTests(unittest.TestCase):
         )
         self.time.start()
         self.addCleanup(self.time.stop)
-        self.thermostat = TerneoThermostat("test", "192.0.2.1")
+        self.thermostat = TerneoThermostat("test", "192.0.2.1", session=FakeSession())
         self.thermostat._parameters[ParamNum.POWER] = (4, "100")
 
     def sample(self, relay=True, elapsed=30):
@@ -95,7 +95,9 @@ class EnergyAccountingTests(unittest.TestCase):
     def test_on_off_intervals_use_previous_sample_for_both_profiles(self):
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             with self.subTest(profile=profile):
-                self.thermostat = TerneoThermostat("test", "192.0.2.1", profile)
+                self.thermostat = TerneoThermostat(
+                    "test", "192.0.2.1", profile, session=FakeSession()
+                )
                 self.thermostat._parameters[ParamNum.POWER] = (4, "100")
                 self.sample(True)
                 self.sample(True, 60)
@@ -186,12 +188,14 @@ class EnergyAccountingTests(unittest.TestCase):
         self.sample(elapsed=30)
         self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 30)
 
-    def test_failed_full_poll_breaks_interval_even_with_available_cached_state(self):
+    async def test_failed_full_poll_breaks_interval_even_with_available_cached_state(
+        self,
+    ):
         self.thermostat._mark_update_successful()
         self.sample()
         self.clock += 30
-        with patch("requests.post", side_effect=requests.Timeout("offline")):
-            self.assertFalse(self.thermostat.update())
+        with patch("tests.http.post", side_effect=TimeoutError("offline")):
+            self.assertFalse(await self.thermostat.update())
         self.assertTrue(self.thermostat.available)
         self.assertTrue(self.thermostat.relay_state)
         self.sample(elapsed=30)
@@ -199,18 +203,18 @@ class EnergyAccountingTests(unittest.TestCase):
         self.sample(elapsed=30)
         self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 30)
 
-    def test_invalid_relay_value_is_a_failed_poll_not_confirmed_off(self):
+    async def test_invalid_relay_value_is_a_failed_poll_not_confirmed_off(self):
         self.sample()
         for invalid in ("2", "-1", "true", True):
             with self.subTest(value=invalid):
                 with patch(
-                    "requests.post",
+                    "tests.http.post",
                     side_effect=[
                         response({"par": [[125, 7, "0"]]}),
                         response({"f.0": invalid}),
                     ],
                 ):
-                    self.assertFalse(self.thermostat.update())
+                    self.assertFalse(await self.thermostat.update())
                 self.assertTrue(self.thermostat.relay_state)
                 self.assertIsNone(self.thermostat._last_relay_update)
 
@@ -289,7 +293,9 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
     def make_coordinator(self, config=None, hass=None):
         config = config or entry()
         hass = hass or self.hass
-        thermostat = TerneoThermostat(config.unique_id, config.data["host"])
+        thermostat = TerneoThermostat(
+            config.unique_id, config.data["host"], session=FakeSession()
+        )
         coordinator = TerneoCoordinator(hass, config, thermostat)
         config.runtime_data = coordinator
         self.coordinators.append(coordinator)
@@ -300,7 +306,7 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         if power is not None:
             params.append([17, 4, power])
         with patch(
-            "requests.post",
+            "tests.http.post",
             side_effect=[
                 response({"sn": coordinator.thermostat.sn, "par": params}),
                 response(
@@ -374,7 +380,7 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.hass.config_entries.async_forward_entry_setups.side_effect = forward
         with patch(
-            "requests.post",
+            "tests.http.post",
             side_effect=[
                 response({"par": [[125, 7, "0"], [17, 4, "100"]]}),
                 response({"f.0": "1"}),
@@ -527,7 +533,7 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         config, _, coordinator = self.make_coordinator()
         invalid = {"heating_energy_kwh": -1, "heating_time_seconds": 10}
         await coordinator._energy_store.async_save(invalid)
-        with patch("requests.post") as post:
+        with patch("tests.http.post") as post:
             with self.assertRaises(ConfigEntryError):
                 await async_setup_entry(self.hass, config)
         post.assert_not_called()
@@ -543,19 +549,19 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
         saved = {"heating_energy_kwh": 3, "heating_time_seconds": 100}
         thermostat.restore_energy_counters(saved)
         await seed.async_shutdown()
-        with patch("requests.post", side_effect=requests.Timeout("offline")):
+        with patch("tests.http.post", side_effect=TimeoutError("offline")):
             with self.assertRaises(ConfigEntryNotReady):
                 await async_setup_entry(self.hass, config)
         self.hass.config_entries.async_forward_entry_setups.assert_not_awaited()
         self.assertEqual(await seed._energy_store.async_load(), saved)
 
-    async def test_save_waits_for_inflight_executor_before_reading_totals(self):
+    async def test_save_waits_for_inflight_request_before_reading_totals(self):
         _, thermostat, coordinator = self.make_coordinator()
         await coordinator.async_restore_energy_counters()
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def executor(command, *args):
+        async def request(command, *args):
             started.set()
             await release.wait()
             thermostat.restore_energy_counters(
@@ -563,7 +569,7 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
             )
             return True
 
-        with patch.object(coordinator, "_async_execute_request", side_effect=executor):
+        with patch.object(coordinator, "_async_execute_request", side_effect=request):
             poll = asyncio.create_task(coordinator._async_update_data())
             await started.wait()
             saving = asyncio.create_task(coordinator.async_save_energy_counters())

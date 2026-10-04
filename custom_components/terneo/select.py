@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
@@ -58,7 +58,7 @@ class TerneoSelectEntityDescription(SelectEntityDescription):
     """Describes Terneo select entity."""
 
     value_fn: Callable[[TerneoThermostat], str | None]
-    set_fn: Callable[[TerneoThermostat, str], bool]
+    set_fn: Callable[[TerneoThermostat, str], Awaitable[bool]]
     options_fn: Callable[[TerneoThermostat], list[str]]
     new_version_only: bool = False
 
@@ -71,7 +71,7 @@ def get_control_type_value(thermostat: TerneoThermostat) -> str | None:
     return None
 
 
-def set_control_type_value(thermostat: TerneoThermostat, value: str) -> bool:
+def set_control_type_value(thermostat: TerneoThermostat, value: str) -> Awaitable[bool]:
     """Set control type from string."""
     control_type = CONTROL_TYPE_OPTIONS.get(value, ControlType.FLOOR)
     return thermostat.set_control_type(control_type)
@@ -92,7 +92,7 @@ def get_sensor_type_value(thermostat: TerneoThermostat) -> str | None:
     return None
 
 
-def set_sensor_type_value(thermostat: TerneoThermostat, value: str) -> bool:
+def set_sensor_type_value(thermostat: TerneoThermostat, value: str) -> Awaitable[bool]:
     """Set sensor type from string."""
     sensor_type = SENSOR_TYPE_OPTIONS.get(value, 2)  # Default to 10k
     return thermostat.set_sensor_type(sensor_type)

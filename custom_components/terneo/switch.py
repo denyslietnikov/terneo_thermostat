@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,8 +28,8 @@ class TerneoSwitchEntityDescription(SwitchEntityDescription):
     """Describes Terneo switch entity."""
 
     value_fn: Callable[[TerneoThermostat], bool | None]
-    turn_on_fn: Callable[[TerneoThermostat], bool]
-    turn_off_fn: Callable[[TerneoThermostat], bool]
+    turn_on_fn: Callable[[TerneoThermostat], Awaitable[bool]]
+    turn_off_fn: Callable[[TerneoThermostat], Awaitable[bool]]
     new_version_only: bool = False
 
 

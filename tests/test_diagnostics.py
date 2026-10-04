@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import homeassistant  # noqa: F401
-import requests
+from aiohttp import ClientConnectionError
 from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -34,6 +34,7 @@ from custom_components.terneo.sensor import (
     async_setup_entry,
 )
 from custom_components.terneo.thermostat import TerneoThermostat
+from tests.http import FakeSession, Response
 
 SERIAL = "TEST-SERIAL-PRIVATE"
 HOST = "192.0.2.123"
@@ -43,13 +44,13 @@ STATUS = {"sn": SERIAL, "t.1": "336", "t.5": "256", "m.1": "3", "f.16": "0", "f.
 
 
 def response(payload, status=200):
-    result = requests.Response()
+    result = Response()
     result.status_code = status
     result._content = json.dumps(payload).encode()
     return result
 
 
-class ConnectionMetricsTests(unittest.TestCase):
+class ConnectionMetricsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.clock = 100.0
         self.now = datetime(2026, 10, 3, 12, tzinfo=UTC)
@@ -57,7 +58,7 @@ class ConnectionMetricsTests(unittest.TestCase):
             "custom_components.terneo.thermostat.time.monotonic",
             side_effect=lambda: self.clock,
         )
-        self.sleep = patch("custom_components.terneo.thermostat.time.sleep")
+        self.sleep = patch("custom_components.terneo.thermostat.sleep")
         self.datetime = patch("custom_components.terneo.thermostat.datetime")
         self.monotonic.start()
         self.sleep.start()
@@ -65,11 +66,11 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.addCleanup(self.monotonic.stop)
         self.addCleanup(self.sleep.stop)
         self.addCleanup(self.datetime.stop)
-        self.thermostat = TerneoThermostat(SERIAL, HOST)
+        self.thermostat = TerneoThermostat(SERIAL, HOST, session=FakeSession())
 
-    def poll(self):
-        with patch("requests.post", side_effect=[response(PARAMS), response(STATUS)]):
-            self.assertTrue(self.thermostat.update())
+    async def poll(self):
+        with patch("tests.http.post", side_effect=[response(PARAMS), response(STATUS)]):
+            self.assertTrue(await self.thermostat.update())
 
     def test_initial_metrics_do_not_invent_freshness(self):
         data = self.thermostat.connection_diagnostics
@@ -80,15 +81,15 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.assertEqual(sum(data["request_error_counts"].values()), 0)
         self.assertIsNone(data["last_request"]["duration_seconds"])
 
-    def test_grace_period_age_and_recovery_metrics(self):
-        self.poll()
+    async def test_grace_period_age_and_recovery_metrics(self):
+        await self.poll()
         successful_at = self.thermostat.last_successful_update
         for failures, available in ((1, True), (2, True), (3, False)):
             self.clock += 30
             with patch(
-                "requests.post", side_effect=requests.Timeout("private exception")
+                "tests.http.post", side_effect=TimeoutError("private exception")
             ):
-                self.assertFalse(self.thermostat.update())
+                self.assertFalse(await self.thermostat.update())
             data = self.thermostat.connection_diagnostics
             self.assertEqual(data["last_successful_update"], successful_at)
             self.assertEqual(data["cached_state_age_seconds"], 30 * failures)
@@ -97,7 +98,7 @@ class ConnectionMetricsTests(unittest.TestCase):
             self.assertEqual(data["last_refresh_error_category"], "timeout")
             self.assertEqual(self.thermostat.floor_temperature, 21)
         self.now += timedelta(minutes=2)
-        self.poll()
+        await self.poll()
         data = self.thermostat.connection_diagnostics
         self.assertTrue(data["available"])
         self.assertEqual(data["consecutive_update_failures"], 0)
@@ -108,37 +109,37 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.assertEqual(data["request_count"], 7)
         self.assertEqual(data["request_error_counts"]["timeout"], 3)
 
-    def test_commands_and_partial_reads_do_not_refresh_full_state_age(self):
-        self.poll()
+    async def test_commands_and_partial_reads_do_not_refresh_full_state_age(self):
+        await self.poll()
         self.clock += 30
-        with patch("requests.post", side_effect=requests.Timeout("private")):
-            self.assertFalse(self.thermostat.update())
+        with patch("tests.http.post", side_effect=TimeoutError("private")):
+            self.assertFalse(await self.thermostat.update())
         self.clock += 10
         with patch(
-            "requests.post",
+            "tests.http.post",
             return_value=response({"sn": SERIAL, "par": [[125, 7, "1"]]}),
         ):
-            self.assertTrue(self.thermostat.turn_off())
-        with patch("requests.post", return_value=response(PARAMS)):
-            self.assertTrue(self.thermostat.get_parameters())
+            self.assertTrue(await self.thermostat.turn_off())
+        with patch("tests.http.post", return_value=response(PARAMS)):
+            self.assertTrue(await self.thermostat.get_parameters())
         data = self.thermostat.connection_diagnostics
         self.assertEqual(data["cached_state_age_seconds"], 40)
         self.assertEqual(data["consecutive_update_failures"], 1)
         self.assertEqual(data["last_refresh_error_category"], "timeout")
         self.assertIsNone(data["last_request"]["error_category"])
-        with patch("requests.post", side_effect=requests.Timeout("private")):
-            self.assertFalse(self.thermostat.turn_on())
+        with patch("tests.http.post", side_effect=TimeoutError("private")):
+            self.assertFalse(await self.thermostat.turn_on())
         self.assertEqual(self.thermostat.consecutive_update_failures, 1)
 
-    def test_wall_clock_jumps_do_not_change_cached_state_age(self):
-        self.poll()
+    async def test_wall_clock_jumps_do_not_change_cached_state_age(self):
+        await self.poll()
         successful_at = self.thermostat.last_successful_update
         self.clock += 17
         self.now -= timedelta(days=3)
         self.assertEqual(self.thermostat.cached_state_age, 17)
         self.assertEqual(self.thermostat.last_successful_update, successful_at)
 
-    def test_request_duration_excludes_rate_limiting(self):
+    async def test_request_duration_excludes_rate_limiting(self):
         self.sleep.side_effect = None
 
         def sleep(delay):
@@ -149,10 +150,10 @@ class ConnectionMetricsTests(unittest.TestCase):
             return response(PARAMS)
 
         with patch(
-            "custom_components.terneo.thermostat.time.sleep", side_effect=sleep
+            "custom_components.terneo.thermostat.sleep", side_effect=sleep
         ) as wait:
-            with patch("requests.post", side_effect=post):
-                self.assertTrue(self.thermostat.get_parameters())
+            with patch("tests.http.post", side_effect=post):
+                self.assertTrue(await self.thermostat.get_parameters())
         wait.assert_called_once_with(1.0)
         self.assertEqual(self.thermostat.last_request_duration, 0.375)
         self.assertEqual(
@@ -160,14 +161,14 @@ class ConnectionMetricsTests(unittest.TestCase):
         )
         self.assertIsNone(self.thermostat.last_successful_update)
 
-    def test_transport_http_json_and_protocol_errors_are_distinct_for_both_profiles(
+    async def test_transport_http_json_and_protocol_errors_are_distinct_for_both_profiles(
         self,
     ):
         invalid_json = response({})
         invalid_json._content = b'{"par":'
         cases = (
-            (requests.Timeout("private"), "timeout", None),
-            (requests.ConnectionError("private"), "transport", None),
+            (TimeoutError("private"), "timeout", None),
+            (ClientConnectionError("private"), "transport", None),
             (response({}, 503), "http", 503),
             (invalid_json, "json", 200),
             (response([]), "protocol", 200),
@@ -178,7 +179,9 @@ class ConnectionMetricsTests(unittest.TestCase):
                 with self.subTest(
                     profile=profile, category=category, result=type(result).__name__
                 ):
-                    thermostat = TerneoThermostat(SERIAL, HOST, profile)
+                    thermostat = TerneoThermostat(
+                        SERIAL, HOST, profile, session=FakeSession()
+                    )
 
                     def post(*args, **kwargs):
                         self.clock += 0.25
@@ -186,8 +189,8 @@ class ConnectionMetricsTests(unittest.TestCase):
                             raise result
                         return result
 
-                    with patch("requests.post", side_effect=post):
-                        self.assertFalse(thermostat.update())
+                    with patch("tests.http.post", side_effect=post):
+                        self.assertFalse(await thermostat.update())
                     data = thermostat.connection_diagnostics
                     self.assertEqual(data["last_request"]["error_category"], category)
                     self.assertEqual(data["last_refresh_error_category"], category)
@@ -197,13 +200,13 @@ class ConnectionMetricsTests(unittest.TestCase):
                     self.assertEqual(sum(data["request_error_counts"].values()), 1)
                     self.assertEqual(data["protocol"]["profile"], profile)
 
-    def test_failed_status_does_not_refresh_timestamp_or_leak_device_text(self):
-        self.poll()
+    async def test_failed_status_does_not_refresh_timestamp_or_leak_device_text(self):
+        await self.poll()
         cached = self.thermostat.last_successful_update
         self.clock += 30
         bad = {"sn": SERIAL, "t.1": f"http://{HOST}/api.cgi?sn={SERIAL}"}
-        with patch("requests.post", side_effect=[response(PARAMS), response(bad)]):
-            self.assertFalse(self.thermostat.update())
+        with patch("tests.http.post", side_effect=[response(PARAMS), response(bad)]):
+            self.assertFalse(await self.thermostat.update())
         data = self.thermostat.connection_diagnostics
         self.assertEqual(data["last_refresh_error_category"], "protocol")
         self.assertEqual(data["last_refresh_error"], "Invalid status response")
@@ -211,15 +214,17 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.assertEqual(self.thermostat.cached_state_age, 30)
         self.assertEqual(self.thermostat.floor_temperature, 21)
 
-    def test_legacy_verification_timeout_is_not_double_counted_as_protocol_error(self):
+    async def test_legacy_verification_timeout_is_not_double_counted_as_protocol_error(
+        self,
+    ):
         with patch(
-            "requests.post",
+            "tests.http.post",
             side_effect=[
                 response({"success": "true"}),
-                requests.Timeout("private"),
+                TimeoutError("private"),
             ],
         ) as post:
-            self.assertFalse(self.thermostat.turn_off())
+            self.assertFalse(await self.thermostat.turn_off())
         data = self.thermostat.connection_diagnostics
         self.assertEqual(post.call_count, 2)
         self.assertEqual(data["request_count"], 2)
@@ -229,12 +234,12 @@ class ConnectionMetricsTests(unittest.TestCase):
         self.assertEqual(data["request_error_counts"]["protocol"], 0)
         self.assertEqual(data["consecutive_update_failures"], 0)
 
-    def test_protocol_acknowledgement_failure_counts_once(self):
+    async def test_protocol_acknowledgement_failure_counts_once(self):
         with patch(
-            "requests.post",
+            "tests.http.post",
             return_value=response({"sn": SERIAL, "par": [[125, 7, "0"]]}),
         ):
-            self.assertFalse(self.thermostat.turn_off())
+            self.assertFalse(await self.thermostat.turn_off())
         data = self.thermostat.connection_diagnostics
         self.assertEqual(data["last_request"]["kind"], "parameter_write")
         self.assertEqual(data["request_error_counts"]["protocol"], 1)
@@ -339,10 +344,10 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             subentries_data=[],
             state=ConfigEntryState.LOADED,
         )
-        self.thermostat = TerneoThermostat(SERIAL, HOST)
+        self.thermostat = TerneoThermostat(SERIAL, HOST, session=FakeSession())
         self.coordinator = TerneoCoordinator(self.hass, self.entry, self.thermostat)
         self.entry.runtime_data = self.coordinator
-        self.sleep = patch("custom_components.terneo.thermostat.time.sleep")
+        self.sleep = patch("custom_components.terneo.thermostat.sleep")
         self.sleep.start()
         self.addCleanup(self.sleep.stop)
 
@@ -353,9 +358,9 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_export_is_read_only_json_serializable_and_redacts_config(self):
-        with patch("requests.post", side_effect=[response(PARAMS), response(STATUS)]):
+        with patch("tests.http.post", side_effect=[response(PARAMS), response(STATUS)]):
             await self.coordinator.async_refresh()
-        with patch("requests.post") as post:
+        with patch("tests.http.post") as post:
             result = await async_get_config_entry_diagnostics(self.hass, self.entry)
         post.assert_not_called()
         encoded = json.dumps(result, allow_nan=False)
@@ -374,21 +379,21 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_export_waits_for_device_lock_without_polling(self):
         async with self.coordinator._request_lock:
-            with patch("requests.post") as post:
+            with patch("tests.http.post") as post:
                 snapshot = asyncio.create_task(
                     async_get_config_entry_diagnostics(self.hass, self.entry)
                 )
                 await asyncio.sleep(0)
                 self.assertFalse(snapshot.done())
                 post.assert_not_called()
-        with patch("requests.post") as post:
+        with patch("tests.http.post") as post:
             result = await asyncio.wait_for(snapshot, 5)
         post.assert_not_called()
         self.assertEqual(result["runtime"]["connection"]["request_count"], 0)
 
     async def test_export_handles_unloaded_entry_without_runtime(self):
         del self.entry.runtime_data
-        with patch("requests.post") as post:
+        with patch("tests.http.post") as post:
             result = await async_get_config_entry_diagnostics(self.hass, self.entry)
         post.assert_not_called()
         self.assertIsNone(result["runtime"])
@@ -436,12 +441,12 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(entity.entity_category, EntityCategory.DIAGNOSTIC)
             self.assertFalse(entity.entity_registry_enabled_default)
             self.assertTrue(entity.available)
-        with patch("requests.post", side_effect=[response(PARAMS), response(STATUS)]):
+        with patch("tests.http.post", side_effect=[response(PARAMS), response(STATUS)]):
             await self.coordinator.async_refresh()
         timestamp = diagnostic[0].native_value
         self.assertIsInstance(timestamp, datetime)
         self.assertIsNotNone(timestamp.tzinfo)
-        with patch("requests.post", side_effect=requests.Timeout("private")):
+        with patch("tests.http.post", side_effect=TimeoutError("private")):
             for _ in range(3):
                 await self.coordinator.async_refresh()
         self.assertFalse(ordinary.available)
@@ -450,7 +455,7 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(diagnostic[1].native_value, 0)
         self.assertEqual(diagnostic[2].native_value, 3)
         self.assertEqual(diagnostic[4].native_value, "timeout")
-        with patch("requests.post", side_effect=[response(PARAMS), response(STATUS)]):
+        with patch("tests.http.post", side_effect=[response(PARAMS), response(STATUS)]):
             await self.coordinator.async_refresh()
         self.assertTrue(ordinary.available)
         self.assertEqual(diagnostic[2].native_value, 0)
@@ -462,7 +467,7 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             self.thermostat._is_new_version = profile == DEVICE_TYPE_NEW
             add_entities = MagicMock()
-            with patch("requests.post") as post:
+            with patch("tests.http.post") as post:
                 await async_setup_entry(self.hass, self.entry, add_entities)
             post.assert_not_called()
             created = add_entities.call_args.args[0]

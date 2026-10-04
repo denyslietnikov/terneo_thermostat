@@ -10,8 +10,8 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from unittest.mock import AsyncMock, patch
 
-import requests
 import voluptuous as vol
+from aiohttp import ClientConnectionError
 from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow, FlowResultType
@@ -30,6 +30,7 @@ from custom_components.terneo.const import (
 )
 from custom_components.terneo.coordinator import TerneoCoordinator
 from custom_components.terneo.thermostat import TerneoThermostat
+from tests.http import FakeSession, Response
 
 SERIAL = "058009000543474239343620000159"
 OLD_HOST = "192.0.2.1"
@@ -37,7 +38,7 @@ NEW_HOST = "192.0.2.2"
 
 
 def response(data):
-    result = requests.Response()
+    result = Response()
     result.status_code = 200
     result._content = json.dumps(data).encode()
     return result
@@ -58,7 +59,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
         self.reload_patch = patch.object(self.manager, "async_reload", self.reload)
         self.reload_patch.start()
         self.addCleanup(self.reload_patch.stop)
-        self.sleep = patch("custom_components.terneo.thermostat.time.sleep")
+        self.sleep = patch("custom_components.terneo.thermostat.sleep")
         self.sleep.start()
         self.addCleanup(self.sleep.stop)
 
@@ -128,7 +129,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_form_prefills_only_host_and_does_not_contact_device(self):
         entry = await self.make_entry()
-        with patch("requests.post") as post:
+        with patch("tests.http.post") as post:
             result = await self.make_flow(entry).async_step_reconfigure()
         post.assert_not_called()
         self.assertEqual(result["type"], FlowResultType.FORM)
@@ -155,7 +156,9 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
                 )
                 entry = await self.make_entry(profile, serial=serial)
                 before_data, before_options = dict(entry.data), dict(entry.options)
-                old_client = TerneoThermostat(serial, OLD_HOST, profile)
+                old_client = TerneoThermostat(
+                    serial, OLD_HOST, profile, session=FakeSession()
+                )
                 old_coordinator = TerneoCoordinator(self.hass, entry, old_client)
                 original_entity = TerneoClimateEntity(
                     old_coordinator, old_client, entry
@@ -172,7 +175,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.reload.reset_mock()
                 with patch(
-                    "requests.post", return_value=self.valid_response(profile, serial)
+                    "tests.http.post", return_value=self.valid_response(profile, serial)
                 ) as post:
                     result = await self.make_flow(entry).async_step_reconfigure(
                         {"host": NEW_HOST}
@@ -192,9 +195,12 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     post.call_args.kwargs["json"], {"cmd": 1, "sn": serial}
                 )
-                self.assertEqual(post.call_args.kwargs["timeout"], 10)
+                self.assertEqual(post.call_args.kwargs["timeout"].total, 10)
                 new_client = TerneoThermostat(
-                    entry.data["serial"], entry.data["host"], entry.data["device_type"]
+                    entry.data["serial"],
+                    entry.data["host"],
+                    entry.data["device_type"],
+                    session=FakeSession(),
                 )
                 new_coordinator = TerneoCoordinator(self.hass, entry, new_client)
                 new_entity = TerneoClimateEntity(new_coordinator, new_client, entry)
@@ -218,13 +224,13 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_timeout_option_uses_default(self):
         entry = await self.make_entry(listener=False)
         self.manager.async_update_entry(entry, options={})
-        with patch("requests.post", return_value=self.valid_response()) as post:
+        with patch("tests.http.post", return_value=self.valid_response()) as post:
             result = await self.make_flow(entry).async_step_reconfigure(
                 {"host": NEW_HOST}
             )
         await self.hass.async_block_till_done()
         self.assertEqual(result["reason"], "reconfigure_successful")
-        self.assertEqual(post.call_args.kwargs["timeout"], DEFAULT_TIMEOUT)
+        self.assertEqual(post.call_args.kwargs["timeout"].total, DEFAULT_TIMEOUT)
         self.assertEqual(entry.options, {})
         self.reload.assert_awaited_once_with(entry.entry_id)
 
@@ -232,7 +238,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
         entry = await self.make_entry(
             listener=False, state=ConfigEntryState.SETUP_RETRY
         )
-        with patch("requests.post", return_value=self.valid_response()):
+        with patch("tests.http.post", return_value=self.valid_response()):
             result = await self.make_flow(entry).async_step_reconfigure(
                 {"host": NEW_HOST}
             )
@@ -249,7 +255,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
                 )
                 original_data = dict(entry.data)
                 with patch(
-                    "requests.post",
+                    "tests.http.post",
                     return_value=response(
                         {"sn": entry.unique_id, "par": [[5, 1, "25"]]}
                     ),
@@ -269,8 +275,8 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
         malformed = response({})
         malformed._content = b'{"sn":'
         for result in (
-            requests.Timeout("offline"),
-            requests.ConnectionError("unreachable"),
+            TimeoutError("offline"),
+            ClientConnectionError("unreachable"),
             malformed,
             response({"par": [[5, 1, "25"]]}),
             response({"sn": "other-device", "par": [[5, 1, "25"]]}),
@@ -280,7 +286,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
         ):
             with (
                 self.subTest(result=result),
-                patch("requests.post", side_effect=[result]),
+                patch("tests.http.post", side_effect=[result]),
             ):
                 form = await flow.async_step_reconfigure({"host": NEW_HOST})
             self.assertEqual(form["step_id"], "reconfigure")
@@ -290,7 +296,7 @@ class ReconfigureTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(entry.data, original_data)
             self.assertEqual(entry.options, original_options)
             self.reload.assert_not_awaited()
-        with patch("requests.post", return_value=self.valid_response()):
+        with patch("tests.http.post", return_value=self.valid_response()):
             result = await flow.async_step_reconfigure({"host": NEW_HOST})
         await self.hass.async_block_till_done()
         self.assertEqual(result["reason"], "reconfigure_successful")

@@ -23,6 +23,7 @@ from custom_components.terneo.const import (
 )
 from custom_components.terneo.coordinator import TerneoCoordinator
 from custom_components.terneo.thermostat import TerneoThermostat
+from tests.http import FakeSession
 
 
 class PlatformTests(unittest.IsolatedAsyncioTestCase):
@@ -37,7 +38,9 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def make_entry(self, profile):
-        thermostat = TerneoThermostat("test", "192.0.2.1", profile)
+        thermostat = TerneoThermostat(
+            "test", "192.0.2.1", profile, session=FakeSession()
+        )
         entry = ConfigEntry(
             version=1,
             minor_version=1,
@@ -283,7 +286,9 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(
                     thermostat, "set_sensor_type", return_value=True
                 ) as setter:
-                    self.assertTrue(select.set_sensor_type_value(thermostat, option))
+                    self.assertTrue(
+                        await select.set_sensor_type_value(thermostat, option)
+                    )
                 setter.assert_called_once_with(value)
         for control in ControlType:
             thermostat._status = {"m.0": str(control)}
@@ -291,5 +296,5 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(
                 thermostat, "set_control_type", return_value=True
             ) as setter:
-                self.assertTrue(select.set_control_type_value(thermostat, option))
+                self.assertTrue(await select.set_control_type_value(thermostat, option))
             setter.assert_called_once_with(control)

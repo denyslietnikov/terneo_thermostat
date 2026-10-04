@@ -2,6 +2,7 @@
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "--strict-config --strict-markers"
+markers = ["local_http: allow HTTP only to a local test server"]
 
 [tool.coverage.run]
 source = ["custom_components.terneo"]

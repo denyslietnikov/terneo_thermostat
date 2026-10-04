@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 # Initialize HA's validation compatibility before importing the integration.
 import homeassistant  # noqa: F401
-import requests
 
 from custom_components.terneo.const import (
     DEVICE_TYPE_NEW,
@@ -17,6 +16,7 @@ from custom_components.terneo.const import (
     OperationMode,
 )
 from custom_components.terneo.thermostat import TerneoThermostat
+from tests.http import FakeSession, Response
 
 MODE_PARAMETERS = {
     "off": [[125, 7, "1"]],
@@ -27,7 +27,7 @@ MODE_PARAMETERS = {
 
 
 def response(payload):
-    result = requests.Response()
+    result = Response()
     result.status_code = 200
     result._content = json.dumps(payload).encode()
     return result
@@ -44,14 +44,16 @@ def snapshot(thermostat):
     )
 
 
-class HvacTransitionTests(unittest.TestCase):
+class HvacTransitionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.sleep = patch("custom_components.terneo.thermostat.time.sleep")
+        self.sleep = patch("custom_components.terneo.thermostat.sleep")
         self.sleep.start()
         self.addCleanup(self.sleep.stop)
 
     def thermostat(self, device_type, source):
-        thermostat = TerneoThermostat("test", "192.0.2.1", device_type)
+        thermostat = TerneoThermostat(
+            "test", "192.0.2.1", device_type, session=FakeSession()
+        )
         thermostat._power_on = source != "off"
         thermostat._mode = -1 if source == "off" else 0 if source == "auto" else 3
         thermostat._setpoint = 25
@@ -70,7 +72,9 @@ class HvacTransitionTests(unittest.TestCase):
         thermostat._status = {"t.5": "400"}
         return thermostat
 
-    def test_every_transition_uses_one_complete_write_without_optimistic_state(self):
+    async def test_every_transition_uses_one_complete_write_without_optimistic_state(
+        self,
+    ):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             for source in MODE_PARAMETERS:
                 for target, params in MODE_PARAMETERS.items():
@@ -87,9 +91,9 @@ class HvacTransitionTests(unittest.TestCase):
                         previous = snapshot(thermostat)
                         acknowledgement = {"sn": thermostat.sn, "par": params}
                         with patch(
-                            "requests.post", return_value=response(acknowledgement)
+                            "tests.http.post", return_value=response(acknowledgement)
                         ) as post:
-                            self.assertTrue(thermostat.set_hvac_mode(target))
+                            self.assertTrue(await thermostat.set_hvac_mode(target))
                         post.assert_called_once()
                         self.assertEqual(
                             post.call_args.kwargs["json"],
@@ -100,7 +104,7 @@ class HvacTransitionTests(unittest.TestCase):
                         )
                         self.assertEqual(snapshot(thermostat), previous)
 
-    def test_failed_batches_do_not_publish_partially_confirmed_state(self):
+    async def test_failed_batches_do_not_publish_partially_confirmed_state(self):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             thermostat = self.thermostat(device_type, "off")
             previous = snapshot(thermostat)
@@ -119,24 +123,26 @@ class HvacTransitionTests(unittest.TestCase):
                 },
             ):
                 with self.subTest(device_type=device_type, payload=payload):
-                    with patch("requests.post", return_value=response(payload)) as post:
-                        self.assertFalse(thermostat.set_hvac_mode("heat"))
+                    with patch(
+                        "tests.http.post", return_value=response(payload)
+                    ) as post:
+                        self.assertFalse(await thermostat.set_hvac_mode("heat"))
                     post.assert_called_once()
                     self.assertEqual(snapshot(thermostat), previous)
                     self.assertIsNotNone(thermostat.last_update_error)
 
-    def test_unsupported_hvac_modes_are_rejected_before_io(self):
+    async def test_unsupported_hvac_modes_are_rejected_before_io(self):
         thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
         previous = snapshot(thermostat)
-        with patch("requests.post") as post:
+        with patch("tests.http.post") as post:
             for mode in ("dry", "heat_cool", "invalid", None, True):
                 with self.subTest(mode=mode):
                     with self.assertRaises(ValueError):
-                        thermostat.set_hvac_mode(mode)
+                        await thermostat.set_hvac_mode(mode)
         post.assert_not_called()
         self.assertEqual(snapshot(thermostat), previous)
 
-    def test_presets_retain_power_mode_batch_without_changing_cooling(self):
+    async def test_presets_retain_power_mode_batch_without_changing_cooling(self):
         for device_type in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             manual = "1" if device_type == DEVICE_TYPE_OLD else "3"
             for mode, api_value in (
@@ -147,7 +153,7 @@ class HvacTransitionTests(unittest.TestCase):
                     thermostat = self.thermostat(device_type, "cool")
                     params = [[125, 7, "0"], [2, 2, api_value]]
                     with patch(
-                        "requests.post",
+                        "tests.http.post",
                         return_value=response(
                             {
                                 "sn": thermostat.sn,
@@ -155,18 +161,18 @@ class HvacTransitionTests(unittest.TestCase):
                             }
                         ),
                     ) as post:
-                        self.assertTrue(thermostat.set_mode(mode))
+                        self.assertTrue(await thermostat.set_mode(mode))
                     post.assert_called_once()
                     self.assertEqual(post.call_args.kwargs["json"]["par"], params)
                     self.assertTrue(thermostat.cooling_mode)
 
-    def test_legacy_manual_parameter_and_telemetry_are_different_codes(self):
+    async def test_legacy_manual_parameter_and_telemetry_are_different_codes(self):
         thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
         # Sanitized values observed on Terneo AX firmware 2.24.1.Y.20.2.20.12.43.
         for power_off in ("0", "1"):
             with self.subTest(power_off=power_off):
                 with patch(
-                    "requests.post",
+                    "tests.http.post",
                     side_effect=[
                         response(
                             {
@@ -191,14 +197,14 @@ class HvacTransitionTests(unittest.TestCase):
                         ),
                     ],
                 ):
-                    self.assertTrue(thermostat.update())
+                    self.assertTrue(await thermostat.update())
                 self.assertEqual(thermostat._parameters[2], (2, "1"))
                 self.assertEqual(
                     thermostat.mode, -1 if power_off == "1" else OperationMode.MANUAL
                 )
                 self.assertEqual(thermostat.setpoint, 16)
 
-    def test_all_legacy_manual_commands_write_one_not_telemetry_three(self):
+    async def test_all_legacy_manual_commands_write_one_not_telemetry_three(self):
         for command, args, params in (
             ("set_hvac_mode", ("heat",), MODE_PARAMETERS["heat"]),
             ("set_hvac_mode", ("cool",), MODE_PARAMETERS["cool"]),
@@ -208,7 +214,7 @@ class HvacTransitionTests(unittest.TestCase):
             with self.subTest(command=command, args=args):
                 thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
                 with patch(
-                    "requests.post",
+                    "tests.http.post",
                     return_value=response(
                         {
                             "sn": thermostat.sn,
@@ -216,11 +222,11 @@ class HvacTransitionTests(unittest.TestCase):
                         }
                     ),
                 ) as post:
-                    self.assertTrue(getattr(thermostat, command)(*args))
+                    self.assertTrue(await getattr(thermostat, command)(*args))
                 post.assert_called_once()
                 self.assertEqual(post.call_args.kwargs["json"]["par"], params)
 
-    def test_telemetry_code_cannot_acknowledge_legacy_manual_write(self):
+    async def test_telemetry_code_cannot_acknowledge_legacy_manual_write(self):
         thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
         for command, args in (
             ("set_hvac_mode", ("heat",)),
@@ -230,7 +236,7 @@ class HvacTransitionTests(unittest.TestCase):
             with self.subTest(command=command):
                 previous = snapshot(thermostat)
                 with patch(
-                    "requests.post",
+                    "tests.http.post",
                     return_value=response(
                         {
                             "sn": thermostat.sn,
@@ -243,10 +249,10 @@ class HvacTransitionTests(unittest.TestCase):
                         }
                     ),
                 ):
-                    self.assertFalse(getattr(thermostat, command)(*args))
+                    self.assertFalse(await getattr(thermostat, command)(*args))
                 self.assertEqual(snapshot(thermostat), previous)
 
-    def test_legacy_setters_match_terneo_parameter_numbers_and_types(self):
+    async def test_legacy_setters_match_terneo_parameter_numbers_and_types(self):
         for command, args, params in (
             ("turn_on", (), [[125, 7, "0"]]),
             ("turn_off", (), [[125, 7, "1"]]),
@@ -274,7 +280,7 @@ class HvacTransitionTests(unittest.TestCase):
             with self.subTest(command=command):
                 thermostat = self.thermostat(DEVICE_TYPE_OLD, "off")
                 with patch(
-                    "requests.post",
+                    "tests.http.post",
                     return_value=response(
                         {
                             "sn": thermostat.sn,
@@ -282,7 +288,7 @@ class HvacTransitionTests(unittest.TestCase):
                         }
                     ),
                 ) as post:
-                    self.assertTrue(getattr(thermostat, command)(*args))
+                    self.assertTrue(await getattr(thermostat, command)(*args))
                 post.assert_called_once()
                 self.assertEqual(
                     post.call_args.kwargs["json"],

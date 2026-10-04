@@ -12,6 +12,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import target as target_helpers
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -130,6 +131,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: TerneoConfigEntry) -> bool:
     """Set up a thermostat; first refresh retries setup if it is offline."""
     thermostat = TerneoThermostat(
+        session=async_get_clientsession(hass),
         serial_number=entry.data[CONF_SERIAL],
         host=entry.data[CONF_HOST],
         device_type=entry.data.get(CONF_DEVICE_TYPE, DEVICE_TYPE_OLD),

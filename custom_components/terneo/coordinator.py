@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -47,6 +47,8 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         )
         self.thermostat = thermostat
         self._request_lock = asyncio.Lock()
+        self._requests: set[asyncio.Future[Any]] = set()
+        self._closing = False
         self._settings_interval = max(
             entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL),
             entry.options.get("settings_scan_interval", DEFAULT_SETTINGS_SCAN_INTERVAL),
@@ -104,7 +106,7 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         )
 
     async def async_save_energy_counters(self) -> None:
-        """Persist only verified totals, with the executor excluded by the device lock."""
+        """Persist only verified totals, excluding HTTP work with the device lock."""
         async with self._request_lock:
             if not self._energy_restored or self._energy_shutdown_complete:
                 return
@@ -112,6 +114,7 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
 
     async def async_shutdown(self) -> None:
         """Stop all timers and flush confirmed counters without estimating a tail."""
+        self._closing = True
         if self._unsub_energy_save is not None:
             self._unsub_energy_save()
             self._unsub_energy_save = None
@@ -119,16 +122,24 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
             self._unsub_energy_stop()
             self._unsub_energy_stop = None
         await super().async_shutdown()
+        requests = tuple(self._requests)
+        for request in requests:
+            request.cancel()
+        if requests:
+            await asyncio.gather(*requests, return_exceptions=True)
+        self.thermostat.break_heating_interval()
         await self.async_save_energy_counters()
         self._energy_shutdown_complete = True
 
     async def _async_execute_request(
-        self, command: Callable[..., Any], *args: Any
+        self, command: Callable[..., Awaitable[Any]], *args: Any
     ) -> Any:
-        """Keep the caller's lock until executor work finishes, even on cancellation."""
-        request = asyncio.ensure_future(
-            self.hass.async_add_executor_job(command, *args)
-        )
+        """Keep caller cancellation from releasing the lock before HTTP completes."""
+        if self._closing:
+            raise HomeAssistantError("Thermostat integration is shutting down")
+        request = asyncio.ensure_future(command(*args))
+        self._requests.add(request)
+        request.add_done_callback(self._requests.discard)
         cancelled = False
         while True:
             try:
@@ -172,7 +183,7 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
                     success = await self._async_execute_request(
                         self.thermostat.update_status
                     )
-            except Exception:
+            except Exception, asyncio.CancelledError:
                 self._force_full_refresh = True
                 self.thermostat.break_heating_interval()
                 raise
@@ -183,7 +194,10 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         )
 
     async def async_execute_command(
-        self, command: Callable[..., Any], *args: Any, refresh_on_failure: bool = False
+        self,
+        command: Callable[..., Awaitable[Any]],
+        *args: Any,
+        refresh_on_failure: bool = False,
     ) -> None:
         """Expose failed commands to the UI and automation traces."""
         error = None
@@ -208,7 +222,7 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
             raise error
 
     async def async_get_diagnostics(self) -> dict[str, Any]:
-        """Snapshot metrics after any active executor operation, without polling."""
+        """Snapshot metrics after any active HTTP operation, without polling."""
         async with self._request_lock:
             return {
                 "coordinator": {

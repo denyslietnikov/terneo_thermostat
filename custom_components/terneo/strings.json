@@ -57,7 +57,7 @@
         "data_description": {
           "scan_interval": "How often to read temperatures and relay status (10-300 seconds)",
           "settings_scan_interval": "Read settings every 30-3600 seconds, never faster than status. Default: 300 seconds. Full refresh after commands and reconnection. Older telemetry may require settings on every poll.",
-          "timeout": "Connection timeout for device requests (3-120 seconds). Increase if connection is unstable.",
+          "timeout": "Total timeout per HTTP request, including its response body (3-120 seconds). Request spacing is separate.",
           "show_advanced_sensors": "Enable additional diagnostic sensors"
         }
       }

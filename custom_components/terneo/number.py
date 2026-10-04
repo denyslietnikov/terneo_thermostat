@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from homeassistant.components.number import (
@@ -29,7 +29,7 @@ class TerneoNumberEntityDescription(NumberEntityDescription):
     """Describes Terneo number entity."""
 
     value_fn: Callable[[TerneoThermostat], float | None]
-    set_fn: Callable[[TerneoThermostat, float], bool]
+    set_fn: Callable[[TerneoThermostat, float], Awaitable[bool]]
     new_version_only: bool = False
 
 

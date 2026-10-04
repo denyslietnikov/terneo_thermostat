@@ -44,8 +44,8 @@ and restart Home Assistant.
 3. Choose a device name and finish setup.
 
 Options: status interval (default 30 seconds), settings interval (default 5 minutes),
-request timeout (default 5 seconds), and advanced sensors. Diagnostic sensors are
-disabled by default; enable them individually in their entity settings.
+total HTTP request timeout (default 5 seconds), and advanced sensors. Diagnostic
+sensors are disabled by default; enable them individually in their entity settings.
 
 To change the IP address, select **Reconfigure** in the integration entry's menu.
 The new address must belong to the same thermostat; entities and settings are retained.

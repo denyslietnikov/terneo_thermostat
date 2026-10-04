@@ -10,6 +10,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_DEVICE_TYPE,
@@ -34,8 +35,10 @@ async def validate_connection(
     host = data[CONF_HOST]
     serial = data[CONF_SERIAL]
 
-    thermostat = TerneoThermostat(serial, host, timeout=timeout)
-    result = await hass.async_add_executor_job(thermostat.get_parameters)
+    thermostat = TerneoThermostat(
+        serial, host, timeout=timeout, session=async_get_clientsession(hass)
+    )
+    result = await thermostat.get_parameters()
     if not result or result.get("sn") != serial:
         raise CannotConnect("Invalid device response - check address and serial")
     params = {param[0] for param in result["par"]}

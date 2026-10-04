@@ -10,7 +10,6 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import requests
 import voluptuous as vol
 from homeassistant.components.climate import HVACMode
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -26,10 +25,11 @@ from custom_components.terneo.select import SELECT_DESCRIPTIONS, TerneoSelectEnt
 from custom_components.terneo.sensor import SENSOR_DESCRIPTIONS, TerneoSensorEntity
 from custom_components.terneo.switch import SWITCH_DESCRIPTIONS, TerneoSwitchEntity
 from custom_components.terneo.thermostat import TerneoThermostat
+from tests.http import FakeSession, Response
 
 
 def response(data):
-    result = requests.Response()
+    result = Response()
     result.status_code = 200
     result._content = json.dumps(data).encode()
     return result
@@ -77,8 +77,11 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
                 monotonic=lambda: self.clock,
             ),
         )
-        self.http = patch("requests.post", side_effect=self.post)
-        for mock in (self.device_time, self.coordinator_time, self.http):
+        self.http = patch("tests.http.post", side_effect=self.post)
+        self.wait = patch(
+            "custom_components.terneo.thermostat.sleep", side_effect=self.sleep
+        )
+        for mock in (self.device_time, self.coordinator_time, self.http, self.wait):
             mock.start()
             self.addCleanup(mock.stop)
 
@@ -92,11 +95,11 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.clock += 0.1
         if kind == 1:
             if self.parameters_error:
-                raise requests.Timeout("private settings error")
+                raise TimeoutError("private settings error")
             return response({"sn": "test", "par": self.params})
         if kind == 4:
             if self.status_error:
-                raise requests.Timeout("private telemetry error")
+                raise TimeoutError("private telemetry error")
             return response({"sn": "test", **self.status})
         self.params = [
             next((p for p in payload["par"] if p[0] == old[0]), old)
@@ -128,7 +131,7 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
             subentries_data=[],
             state=ConfigEntryState.LOADED,
         )
-        client = TerneoThermostat("test", "192.0.2.1", profile)
+        client = TerneoThermostat("test", "192.0.2.1", profile, session=FakeSession())
         coordinator = TerneoCoordinator(self.hass, config, client)
         config.runtime_data = coordinator
         self.coordinators.append(coordinator)
@@ -415,7 +418,7 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.poll(coordinator), [1, 4])
         self.assertEqual(client.brightness, 7)
 
-    async def test_cancelled_status_poll_keeps_lock_until_executor_finishes(self):
+    async def test_cancelled_status_poll_keeps_lock_until_request_finishes(self):
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             with self.subTest(profile=profile):
                 _, client, coordinator = self.make_coordinator(profile)
@@ -423,15 +426,14 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
                 started = asyncio.Event()
                 release = asyncio.Event()
 
-                async def executor(command, *args):
-                    if command == client.update_status:
-                        started.set()
-                        await release.wait()
-                    return command(*args)
+                original = client.update_status
 
-                with patch.object(
-                    self.hass, "async_add_executor_job", side_effect=executor
-                ):
+                async def delayed_status():
+                    started.set()
+                    await release.wait()
+                    return await original()
+
+                with patch.object(client, "update_status", side_effect=delayed_status):
                     polling = asyncio.create_task(coordinator._async_update_data())
                     await started.wait()
                     polling.cancel()

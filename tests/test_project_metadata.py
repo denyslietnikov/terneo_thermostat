@@ -1,5 +1,6 @@
 """Keep development dependencies, HACS and integration metadata aligned."""
 
+import ast
 import importlib.metadata
 import json
 import tomllib
@@ -11,6 +12,23 @@ from packaging.utils import canonicalize_name
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_production_http_has_no_blocking_transport_or_executor_wrappers():
+    for path in (ROOT / "custom_components/terneo").glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(alias.name != "requests" for alias in node.names)
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "requests"
+                assert not (
+                    node.module == "time"
+                    and any(alias.name == "sleep" for alias in node.names)
+                )
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                assert node.func.attr != "async_add_executor_job"
+                assert ast.unparse(node.func) != "time.sleep"
 
 
 def test_supported_home_assistant_version():
@@ -41,9 +59,11 @@ def test_manifest_matches_maintained_repository_and_dependency_pins():
         package, version = requirement.split("==")
         assert canonicalize_name(package) not in core_requirements
         assert importlib.metadata.version(package) == version
-    assert "requests" in core_requirements
-    assert "requests==2.34.2" in requirements
-    assert importlib.metadata.version("requests") == "2.34.2"
+    assert "aiohttp" in core_requirements
+    assert not any(
+        line.startswith(("requests==", "aiohttp==")) for line in requirements
+    )
+    assert importlib.metadata.version("aiohttp") == "3.14.3"
 
 
 def test_license_and_local_brand_assets_are_present():

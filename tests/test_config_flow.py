@@ -6,7 +6,6 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import requests
 import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow, FlowResultType
@@ -18,13 +17,14 @@ from custom_components.terneo.config_flow import (
     validate_connection,
 )
 from custom_components.terneo.const import DEVICE_TYPE_NEW, DEVICE_TYPE_OLD, DOMAIN
+from tests.http import Response
 
 SERIAL = "058009000543474239343620000159"
 INPUT = {"host": "192.0.2.1", "serial": SERIAL}
 
 
 def response(data):
-    result = requests.Response()
+    result = Response()
     result.status_code = 200
     result._content = json.dumps(data).encode()
     return result
@@ -42,7 +42,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.flow.handler = DOMAIN
         self.flow.flow_id = "test-flow"
         self.flow.context = {"source": "user"}
-        self.sleep = patch("custom_components.terneo.thermostat.time.sleep")
+        self.sleep = patch("custom_components.terneo.thermostat.sleep")
         self.sleep.start()
         self.addCleanup(self.sleep.stop)
 
@@ -68,7 +68,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             with (
                 self.subTest(profile=profile),
                 patch(
-                    "requests.post",
+                    "tests.http.post",
                     return_value=response({"sn": SERIAL, "par": params}),
                 ) as post,
             ):
@@ -90,13 +90,13 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             with (
                 self.subTest(data=data),
-                patch("requests.post", return_value=response(data)),
+                patch("tests.http.post", return_value=response(data)),
             ):
                 with self.assertRaises(CannotConnect):
                     await validate_connection(self.hass, INPUT)
 
     async def test_timeout_returns_correctable_form(self):
-        with patch("requests.post", side_effect=requests.Timeout("offline")):
+        with patch("tests.http.post", side_effect=TimeoutError("offline")):
             result = await self.flow.async_step_user(INPUT)
         self.assertEqual(result["step_id"], "user")
         self.assertEqual(result["errors"], {"base": "cannot_connect"})
@@ -156,7 +156,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(source="user", data=INPUT, state=None)
         )
         with patch(
-            "requests.post",
+            "tests.http.post",
             return_value=response({"sn": SERIAL, "par": [[5, 1, "25"]]}),
         ):
             with self.assertRaises(AbortFlow) as raised:
@@ -172,7 +172,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
         with patch(
-            "requests.post",
+            "tests.http.post",
             return_value=response({"sn": SERIAL, "par": [[5, 1, "25"]]}),
         ):
             with self.assertRaises(AbortFlow) as raised:

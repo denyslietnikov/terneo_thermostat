@@ -7,6 +7,7 @@ import time
 from asyncio import sleep
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import aiohttp
 
@@ -24,6 +25,43 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_COMMAND_LOG_VALUE_PARAMETERS = frozenset(
+    {
+        ParamNum.MODE,
+        ParamNum.CONTROL_TYPE,
+        ParamNum.MANUAL_AIR,
+        ParamNum.MANUAL_FLOOR,
+        ParamNum.SET_TEMPERATURE,
+        ParamNum.COOLING_CONTROL_WAY,
+        ParamNum.POWER_OFF,
+    }
+)
+
+
+def _command_log_parameters(
+    parameters: dict[int, tuple[int, str]], numbers: dict[int, tuple[int, str]]
+) -> dict[int, Any]:
+    """Log only requested records and short numeric values of known controls."""
+    safe = {}
+    for number in numbers:
+        if number not in parameters:
+            safe[int(number)] = "missing"
+            continue
+        data_type, value = parameters[number]
+        logged_value = "[redacted]"
+        if (
+            number in _COMMAND_LOG_VALUE_PARAMETERS
+            and data_type != DataType.CSTRING
+            and len(value) <= 12
+        ):
+            try:
+                numeric_value = int(value)
+            except ValueError:
+                pass
+            else:
+                logged_value = str(numeric_value)
+        safe[int(number)] = {"type": int(data_type), "value": logged_value}
+    return safe
 
 
 class TerneoThermostat:
@@ -346,8 +384,20 @@ class TerneoThermostat:
     async def set_parameters(self, params: list[list]) -> dict | bool:
         """Confirm every change in a full acknowledgement or legacy readback."""
         requested = self._parse_parameters(params)
+        write_id = uuid4().hex[:12]
+        source = "acknowledgement"
+        _LOGGER.debug(
+            "Terneo write %s started: profile=%s requested=%s cached=%s",
+            write_id,
+            "new" if self._is_new_version else "old",
+            _command_log_parameters(requested, requested),
+            _command_log_parameters(self._parameters, requested),
+        )
         result = await self._post(command=True, json={"sn": self.sn, "par": params})
         if result is False:
+            _LOGGER.debug(
+                "Terneo write %s failed: %s", write_id, self._last_update_error
+            )
             return False
         if (
             not self._is_new_version
@@ -356,6 +406,11 @@ class TerneoThermostat:
         ):
             # AX firmware can acknowledge receipt even when a write is ignored.
             # Verify without publishing partial state or repeating the write.
+            source = "legacy_readback"
+            _LOGGER.debug(
+                "Terneo write %s received legacy receipt; verifying with parameter readback",
+                write_id,
+            )
             try:
                 result = await self._post(json={"cmd": CMD_GET_PARAMS, "sn": self.sn})
             except asyncio.CancelledError:
@@ -366,6 +421,12 @@ class TerneoThermostat:
                 )
                 raise
             if result is False:
+                _LOGGER.debug(
+                    "Terneo write %s failed: source=%s error=%s",
+                    write_id,
+                    source,
+                    self._last_update_error,
+                )
                 return self._request_failed(
                     "Unable to verify legacy parameter write",
                     command=True,
@@ -383,6 +444,7 @@ class TerneoThermostat:
             return self._request_failed(
                 f"Invalid command acknowledgement: {err}", command=True, uncertain=True
             )
+        mismatches = []
         for number, (data_type, value) in requested.items():
             if (
                 number not in confirmed
@@ -392,11 +454,27 @@ class TerneoThermostat:
                     != self._convert_value(value, data_type)
                 )
             ):
-                return self._request_failed(
-                    "Thermostat did not confirm all requested parameters",
-                    command=True,
-                    uncertain=True,
-                )
+                mismatches.append(int(number))
+        if mismatches:
+            _LOGGER.warning(
+                "Terneo write %s not confirmed: source=%s mismatches=%s requested=%s actual=%s",
+                write_id,
+                source,
+                mismatches,
+                _command_log_parameters(requested, requested),
+                _command_log_parameters(confirmed, requested),
+            )
+            return self._request_failed(
+                "Thermostat did not confirm all requested parameters",
+                command=True,
+                uncertain=True,
+            )
+        _LOGGER.debug(
+            "Terneo write %s confirmed: source=%s actual=%s",
+            write_id,
+            source,
+            _command_log_parameters(confirmed, requested),
+        )
         return result
 
     async def get_status(self) -> dict | bool:

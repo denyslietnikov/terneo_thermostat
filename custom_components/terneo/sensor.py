@@ -14,13 +14,14 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfTemperature, UnitOfTime
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, SENSOR_TYPES
+from .const import DOMAIN, SENSOR_TYPES
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
+from .entity import TerneoEntity
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -155,7 +156,9 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
         icon="mdi:flash",
-        value_fn=lambda t: t.power_watts if t.relay_state else 0,
+        value_fn=lambda t: (
+            None if t.relay_state is None else t.power_watts if t.relay_state else 0
+        ),
         available_fn=lambda t: t.power_watts is not None and t.power_watts > 0,
     ),
     TerneoSensorEntityDescription(
@@ -163,7 +166,9 @@ SENSOR_DESCRIPTIONS: tuple[TerneoSensorEntityDescription, ...] = (
         translation_key="heating_active",
         name="Heating Active",
         icon="mdi:radiator",
-        value_fn=lambda t: "On" if t.relay_state else "Off",
+        value_fn=lambda t: (
+            None if t.relay_state is None else "On" if t.relay_state else "Off"
+        ),
     ),
 )
 
@@ -236,15 +241,31 @@ async def async_setup_entry(
         if description.new_version_only and not thermostat.is_new_version:
             continue
 
+        if (
+            entry.options.get("show_advanced_sensors", False)
+            and not description.entity_registry_enabled_default
+            and description.entity_category is not EntityCategory.DIAGNOSTIC
+        ):
+            registry = er.async_get(hass)
+            entity_id = registry.async_get_entity_id(
+                "sensor", DOMAIN, f"{thermostat.sn}_{description.key}"
+            )
+            if (
+                entity_id is not None
+                and (registered := registry.async_get(entity_id)) is not None
+                and registered.config_entry_id == entry.entry_id
+                and registered.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+            ):
+                registry.async_update_entity(entity_id, disabled_by=None)
+
         entities.append(TerneoSensorEntity(coordinator, thermostat, entry, description))
 
     async_add_entities(entities)
 
 
-class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
+class TerneoSensorEntity(TerneoEntity, SensorEntity):
     """Terneo sensor entity."""
 
-    _attr_has_entity_name = True
     entity_description: TerneoSensorEntityDescription
 
     def __init__(
@@ -255,9 +276,7 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
         description: TerneoSensorEntityDescription,
     ) -> None:
         """Initialize the sensor entity."""
-        super().__init__(coordinator)
-        self._thermostat = thermostat
-        self._entry = entry
+        super().__init__(coordinator, thermostat, entry, description.key)
         self.entity_description = description
         self._attr_entity_registry_enabled_default = (
             description.entity_registry_enabled_default
@@ -266,15 +285,6 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
                 and entry.options.get("show_advanced_sensors", False)
             )
         )
-
-        self._attr_unique_id = f"{thermostat.sn}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat.sn)},
-            "name": entry.title,
-            "manufacturer": MANUFACTURER,
-            "model": "OZ" if thermostat.is_new_version else "OZ (Legacy)",
-            "serial_number": thermostat.sn,
-        }
 
     @property
     def native_value(self) -> float | int | str | datetime | None:
@@ -294,8 +304,3 @@ class TerneoSensorEntity(CoordinatorEntity[TerneoCoordinator], SensorEntity):
         ):
             return False
         return self.entity_description.available_fn(self._thermostat)
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()

@@ -46,6 +46,9 @@ and restart Home Assistant.
 Options: status interval (default 30 seconds), settings interval (default 5 minutes),
 total HTTP request timeout (default 5 seconds), and advanced sensors. Diagnostic
 sensors are disabled by default; enable them individually in their entity settings.
+Enabling advanced sensors also enables existing sensors disabled by the integration;
+manual user disables are preserved. Turning the option off changes the default for
+new entities; manage existing enabled sensors in their entity settings.
 
 To change the IP address, select **Reconfigure** in the integration entry's menu.
 The new address must belong to the same thermostat; entities and settings are retained.
@@ -64,6 +67,8 @@ These actions require an explicit entity, device, or area target.
 - **Unavailable:** brief polling failures retain previous readings, which may be
   stale. Prolonged failures mark the device unavailable; polling restores it on recovery.
   Failed settings reads affect configuration entities without blocking telemetry.
+  Missing readings in an otherwise valid response are shown as unknown. Nonfinite
+  temperatures are rejected as protocol errors.
 - **Command failed:** check the actual state before retrying; a timed-out command
   may already have applied.
 - **Diagnostics:** enable connection sensors or select **Download diagnostics**

@@ -12,13 +12,13 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, ControlType, OperationMode
+from .const import ControlType, OperationMode
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
+from .entity import TerneoEntity
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,10 +49,9 @@ async def async_setup_entry(
     async_add_entities([TerneoClimateEntity(coordinator, thermostat, entry)])
 
 
-class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
+class TerneoClimateEntity(TerneoEntity, ClimateEntity):
     """Terneo climate entity."""
 
-    _attr_has_entity_name = True
     _attr_name = None
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 1
@@ -67,18 +66,7 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         entry: TerneoConfigEntry,
     ) -> None:
         """Initialize the climate entity."""
-        super().__init__(coordinator)
-        self._thermostat = thermostat
-        self._entry = entry
-
-        self._attr_unique_id = f"{thermostat.sn}_climate"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat.sn)},
-            "name": entry.title,
-            "manufacturer": MANUFACTURER,
-            "model": "OZ" if thermostat.is_new_version else "OZ (Legacy)",
-            "serial_number": thermostat.sn,
-        }
+        super().__init__(coordinator, thermostat, entry, "climate")
 
     @property
     def current_temperature(self) -> float | None:
@@ -120,12 +108,14 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         return float(limit) if limit is not None else 45.0
 
     @property
-    def hvac_mode(self) -> HVACMode:
+    def hvac_mode(self) -> HVACMode | None:
         """Return current HVAC mode."""
         mode = self._thermostat.mode
 
-        if mode == -1 or not self._thermostat.power_on:
+        if mode == -1 or self._thermostat.power_on is False:
             return HVACMode.OFF
+        if mode is None or self._thermostat.power_on is None:
+            return None
 
         # Check if in cooling mode
         if self._thermostat.cooling_mode:
@@ -138,10 +128,12 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         return HVACMode.HEAT
 
     @property
-    def hvac_action(self) -> HVACAction:
+    def hvac_action(self) -> HVACAction | None:
         """Return current HVAC action."""
-        if not self._thermostat.power_on or self._thermostat.mode == -1:
+        if self._thermostat.power_on is False or self._thermostat.mode == -1:
             return HVACAction.OFF
+        if self._thermostat.power_on is None or self._thermostat.relay_state is None:
+            return None
 
         if self._thermostat.relay_state:
             if self._thermostat.cooling_mode:
@@ -155,6 +147,8 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         """Return current preset mode."""
         mode = self._thermostat.mode
 
+        if mode is None:
+            return None
         if mode == OperationMode.SCHEDULE:
             return PRESET_SCHEDULE
         return PRESET_MANUAL
@@ -242,8 +236,3 @@ class TerneoClimateEntity(CoordinatorEntity[TerneoCoordinator], ClimateEntity):
         """Turn off the thermostat."""
         await self.coordinator.async_execute_command(self._thermostat.turn_off)
         await self.coordinator.async_request_refresh()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()

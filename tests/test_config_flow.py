@@ -63,7 +63,9 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_both_profiles_are_identified_from_valid_device_parameters(self):
         for profile, params in (
             (DEVICE_TYPE_OLD, [[5, 1, "25"]]),
+            (DEVICE_TYPE_OLD, [[5, 1, "25"], [4, 1, "22"], [6, 1, "5"], [33, 1, "35"]]),
             (DEVICE_TYPE_NEW, [[5, 3, "250"], [4, 3, "220"]]),
+            (DEVICE_TYPE_NEW, [[5, 3, "250"]]),
         ):
             with (
                 self.subTest(profile=profile),
@@ -86,6 +88,9 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             {"par": [[5, 1, "25"]]},
             {"sn": SERIAL, "par": [[5]]},
             {"sn": SERIAL, "par": []},
+            {"sn": SERIAL, "par": [[23, 2, "5"]]},
+            {"sn": SERIAL, "par": [[5, 0, "25"]]},
+            {"sn": SERIAL, "par": [[5, 1, "25"], [4, 3, "220"]]},
             [],
         ):
             with (

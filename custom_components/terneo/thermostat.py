@@ -36,6 +36,25 @@ _COMMAND_LOG_VALUE_PARAMETERS = frozenset(
         ParamNum.POWER_OFF,
     }
 )
+_PAIRED_SETTING_PARAMETERS = frozenset(
+    {
+        ParamNum.LOWER_LIMIT,
+        ParamNum.UPPER_LIMIT,
+        ParamNum.LOWER_AIR_LIMIT,
+        ParamNum.UPPER_AIR_LIMIT,
+        ParamNum.MIN_TEMP_ADVANCED,
+        ParamNum.MAX_TEMP_ADVANCED,
+        ParamNum.LOWER_WARNING_TEMP,
+        ParamNum.UPPER_WARNING_TEMP,
+        ParamNum.NIGHT_BRIGHT_START,
+        ParamNum.NIGHT_BRIGHT_END,
+        ParamNum.BUTTON_MINUS_COR,
+        ParamNum.BUTTON_MENU_COR,
+        ParamNum.BUTTON_PLUS_COR,
+        ParamNum.AWAY_FLOOR,
+        ParamNum.AWAY_AIR,
+    }
+)
 
 
 def _command_log_parameters(
@@ -475,6 +494,18 @@ class TerneoThermostat:
             source,
             _command_log_parameters(confirmed, requested),
         )
+        # Keep related setters under the coordinator lock from reading a stale
+        # companion value before the post-command full refresh can run. Only
+        # requested, validated companion settings are confirmed here. Operating
+        # state still waits for telemetry from the following full refresh.
+        self._parameters = {
+            **self._parameters,
+            **{
+                number: confirmed[number]
+                for number in requested
+                if number in _PAIRED_SETTING_PARAMETERS
+            },
+        }
         return result
 
     async def get_status(self) -> dict | bool:
@@ -487,7 +518,10 @@ class TerneoThermostat:
                 raise ValueError("Response did not contain thermostat status")
             for key in ("t.1", "t.5", "t.2"):
                 if key in result:
-                    float(result[key])
+                    if isinstance(result[key], bool) or not math.isfinite(
+                        float(result[key])
+                    ):
+                        raise ValueError("Invalid temperature")
             for key in ("m.0", "m.1", "m.5", "f.0", "f.16"):
                 if key in result:
                     int(result[key])
@@ -496,7 +530,7 @@ class TerneoThermostat:
                     raise ValueError("Invalid binary status")
             if "m.0" in result and str(result["m.0"]) not in ("0", "1", "2"):
                 raise ValueError("Invalid control type")
-        except TypeError, ValueError:
+        except TypeError, ValueError, OverflowError:
             return self._request_failed("Invalid status response")
         self._status = result
         return result
@@ -1361,24 +1395,29 @@ class TerneoThermostat:
 
     def _parse_status(self, data: dict) -> None:
         """Parse status response."""
+        power_off = self._get_param_value(ParamNum.POWER_OFF)
         self._power_on = (
             int(data["f.16"]) == 0
             if "f.16" in data
-            else not self._get_param_value(ParamNum.POWER_OFF)
+            else not power_off
+            if power_off is not None
+            else None
         )
         # Floor temperature (t.1 = raw * 16)
-        if "t.1" in data:
-            self._floor_temperature = float(data["t.1"]) / 16.0
+        self._floor_temperature = float(data["t.1"]) / 16.0 if "t.1" in data else None
 
         # Air temperature (t.2 for new version)
-        if self._is_new_version and "t.2" in data:
-            self._air_temperature = float(data["t.2"]) / 16.0
+        self._air_temperature = (
+            float(data["t.2"]) / 16.0
+            if self._is_new_version and "t.2" in data
+            else None
+        )
 
         # Setpoint (t.5 = raw * 16)
-        if "t.5" in data:
-            self._setpoint = float(data["t.5"]) / 16.0
+        self._setpoint = float(data["t.5"]) / 16.0 if "t.5" in data else None
 
         # Mode
+        self._mode = None
         if "m.1" in data:
             mode_value = int(data["m.1"])
             # Check power state
@@ -1393,6 +1432,7 @@ class TerneoThermostat:
             self._update_energy_tracking(new_relay_state)
             self._relay_state = new_relay_state
         else:
+            self._relay_state = None
             self.break_heating_interval()
 
     def break_heating_interval(self) -> None:

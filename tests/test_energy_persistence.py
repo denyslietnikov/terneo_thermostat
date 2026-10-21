@@ -182,7 +182,7 @@ class EnergyAccountingTests(unittest.IsolatedAsyncioTestCase):
         self.sample()
         self.clock += 30
         self.thermostat._parse_status({"t.1": "336"})
-        self.assertTrue(self.thermostat.relay_state)
+        self.assertIsNone(self.thermostat.relay_state)
         self.sample(elapsed=30)
         self.assertEqual(self.thermostat.energy_counters["heating_time_seconds"], 0)
         self.sample(elapsed=30)
@@ -441,11 +441,52 @@ class HomeAssistantEnergyPersistenceTests(unittest.IsolatedAsyncioTestCase):
             await periodic_save(datetime.now(UTC))
             save.assert_awaited_once_with(thermostat.energy_counters)
             await coordinator.async_shutdown()
-            self.assertEqual(save.await_count, 2)
+            self.assertEqual(save.await_count, 1)
             await periodic_save(datetime.now(UTC))
             await coordinator.async_shutdown()
-            self.assertEqual(save.await_count, 2)
+            self.assertEqual(save.await_count, 1)
         cancel.assert_called_once()
+
+    async def test_unchanged_totals_skip_writes_but_changes_and_reset_are_saved(self):
+        _, thermostat, coordinator = self.make_coordinator()
+        await coordinator.async_restore_energy_counters()
+        with patch.object(
+            coordinator._energy_store,
+            "_async_write_data",
+            wraps=coordinator._energy_store._async_write_data,
+        ) as write:
+            await coordinator.async_save_energy_counters()
+            write.assert_awaited_once()
+            for _ in range(3):
+                await coordinator.async_save_energy_counters()
+            self.assertEqual(write.await_count, 1)
+            thermostat.restore_energy_counters(
+                {"heating_energy_kwh": 1.234567, "heating_time_seconds": 42.123}
+            )
+            await coordinator.async_save_energy_counters()
+            self.assertEqual(write.await_count, 2)
+            thermostat.reset_energy_counter()
+            await coordinator.async_shutdown()
+            self.assertEqual(write.await_count, 3)
+        self.assertEqual(
+            await coordinator._energy_store.async_load(), thermostat.energy_counters
+        )
+
+    async def test_restored_unchanged_totals_do_not_rewrite_storage(self):
+        config, thermostat, coordinator = self.make_coordinator()
+        await coordinator.async_restore_energy_counters()
+        thermostat.restore_energy_counters(
+            {"heating_energy_kwh": 3.14159, "heating_time_seconds": 987.654}
+        )
+        await coordinator.async_shutdown()
+        _, _, restored = self.make_coordinator(config)
+        await restored.async_restore_energy_counters()
+        with patch.object(
+            restored._energy_store, "async_save", new_callable=AsyncMock
+        ) as save:
+            await restored.async_save_energy_counters()
+            await restored.async_shutdown()
+            save.assert_not_awaited()
 
     async def test_ha_stop_flushes_counters_without_estimated_tail(self):
         _, thermostat, coordinator = self.make_coordinator()

@@ -7,10 +7,9 @@ import logging
 from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
+from .entity import TerneoEntity
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,10 +27,9 @@ async def async_setup_entry(
     async_add_entities([TerneoRestartButton(coordinator, thermostat, entry)])
 
 
-class TerneoRestartButton(CoordinatorEntity[TerneoCoordinator], ButtonEntity):
+class TerneoRestartButton(TerneoEntity, ButtonEntity):
     """Terneo restart button entity."""
 
-    _attr_has_entity_name = True
     _attr_translation_key = "restart"
     _attr_icon = "mdi:restart"
     _attr_device_class = ButtonDeviceClass.RESTART
@@ -43,18 +41,7 @@ class TerneoRestartButton(CoordinatorEntity[TerneoCoordinator], ButtonEntity):
         entry: TerneoConfigEntry,
     ) -> None:
         """Initialize the button entity."""
-        super().__init__(coordinator)
-        self._thermostat = thermostat
-        self._entry = entry
-
-        self._attr_unique_id = f"{thermostat.sn}_restart"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat.sn)},
-            "name": entry.title,
-            "manufacturer": MANUFACTURER,
-            "model": "OZ" if thermostat.is_new_version else "OZ (Legacy)",
-            "serial_number": thermostat.sn,
-        }
+        super().__init__(coordinator, thermostat, entry, "restart")
 
     @property
     def available(self) -> bool:

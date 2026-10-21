@@ -12,13 +12,13 @@ from homeassistant.components.switch import (
     SwitchEntity,
     SwitchEntityDescription,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
+from .entity import TerneoEntity
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -144,10 +144,9 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class TerneoSwitchEntity(CoordinatorEntity[TerneoCoordinator], SwitchEntity):
+class TerneoSwitchEntity(TerneoEntity, SwitchEntity):
     """Terneo switch entity."""
 
-    _attr_has_entity_name = True
     entity_description: TerneoSwitchEntityDescription
 
     def __init__(
@@ -158,19 +157,8 @@ class TerneoSwitchEntity(CoordinatorEntity[TerneoCoordinator], SwitchEntity):
         description: TerneoSwitchEntityDescription,
     ) -> None:
         """Initialize the switch entity."""
-        super().__init__(coordinator)
-        self._thermostat = thermostat
-        self._entry = entry
+        super().__init__(coordinator, thermostat, entry, description.key)
         self.entity_description = description
-
-        self._attr_unique_id = f"{thermostat.sn}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat.sn)},
-            "name": entry.title,
-            "manufacturer": MANUFACTURER,
-            "model": "OZ" if thermostat.is_new_version else "OZ (Legacy)",
-            "serial_number": thermostat.sn,
-        }
 
     @property
     def is_on(self) -> bool | None:
@@ -202,8 +190,3 @@ class TerneoSwitchEntity(CoordinatorEntity[TerneoCoordinator], SwitchEntity):
             self.entity_description.turn_off_fn, self._thermostat
         )
         await self.coordinator.async_request_refresh()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()

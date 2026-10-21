@@ -22,6 +22,8 @@ from .const import (
     DEVICE_TYPE_NEW,
     DEVICE_TYPE_OLD,
     DOMAIN,
+    DataType,
+    ParamNum,
 )
 from .thermostat import TerneoThermostat
 
@@ -41,9 +43,18 @@ async def validate_connection(
     result = await thermostat.get_parameters()
     if not result or result.get("sn") != serial:
         raise CannotConnect("Invalid device response - check address and serial")
-    params = {param[0] for param in result["par"]}
+    params = {number: data_type for number, data_type, _ in result["par"]}
+    # Legacy AX also exposes air parameters. The wire type of manual floor
+    # temperature distinguishes integer Celsius from the newer tenths encoding.
+    temperature_type = params.get(ParamNum.MANUAL_FLOOR)
+    if temperature_type not in (DataType.INT8, DataType.INT16) or any(
+        params[number] != temperature_type
+        for number in (ParamNum.MANUAL_AIR, ParamNum.AWAY_AIR, ParamNum.AWAY_FLOOR)
+        if number in params
+    ):
+        raise CannotConnect("Unable to determine thermostat temperature encoding")
     device_type = (
-        DEVICE_TYPE_NEW if params.intersection({4, 6, 33}) else DEVICE_TYPE_OLD
+        DEVICE_TYPE_NEW if temperature_type == DataType.INT16 else DEVICE_TYPE_OLD
     )
     return {
         "serial": serial,

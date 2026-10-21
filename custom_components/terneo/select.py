@@ -7,12 +7,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, ControlType
+from .const import ControlType
 from .coordinator import TerneoConfigEntry, TerneoCoordinator
+from .entity import TerneoEntity
 from .thermostat import TerneoThermostat
 
 _LOGGER = logging.getLogger(__name__)
@@ -147,10 +147,9 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
+class TerneoSelectEntity(TerneoEntity, SelectEntity):
     """Terneo select entity."""
 
-    _attr_has_entity_name = True
     entity_description: TerneoSelectEntityDescription
 
     def __init__(
@@ -161,19 +160,8 @@ class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
         description: TerneoSelectEntityDescription,
     ) -> None:
         """Initialize the select entity."""
-        super().__init__(coordinator)
-        self._thermostat = thermostat
-        self._entry = entry
+        super().__init__(coordinator, thermostat, entry, description.key)
         self.entity_description = description
-
-        self._attr_unique_id = f"{thermostat.sn}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat.sn)},
-            "name": entry.title,
-            "manufacturer": MANUFACTURER,
-            "model": "OZ" if thermostat.is_new_version else "OZ (Legacy)",
-            "serial_number": thermostat.sn,
-        }
 
         # Set options dynamically
         self._attr_options = description.options_fn(thermostat)
@@ -198,8 +186,3 @@ class TerneoSelectEntity(CoordinatorEntity[TerneoCoordinator], SelectEntity):
             self.entity_description.set_fn, self._thermostat, option
         )
         await self.coordinator.async_request_refresh()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()

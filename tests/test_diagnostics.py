@@ -19,6 +19,9 @@ from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 
 from custom_components.terneo.const import DEVICE_TYPE_NEW, DEVICE_TYPE_OLD, DOMAIN
@@ -331,6 +334,10 @@ class HomeAssistantDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.temp = TemporaryDirectory()
         self.hass = HomeAssistant(self.temp.name)
         self.hass.config_entries = MagicMock()
+        dr.async_setup(self.hass)
+        await dr.async_load(self.hass, load_empty=True)
+        await ar.async_load(self.hass, load_empty=True)
+        await er.async_load(self.hass, load_empty=True)
         self.entry = ConfigEntry(
             version=1,
             minor_version=1,

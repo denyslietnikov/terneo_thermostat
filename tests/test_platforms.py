@@ -167,6 +167,68 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
             )
             coordinator.async_request_refresh.assert_awaited_once_with()
 
+    async def test_paired_number_settings_preserve_valid_zero(self):
+        _, thermostat, _ = self.make_entry(DEVICE_TYPE_NEW)
+        thermostat._parameters = {53: (4, "0"), 63: (1, "0")}
+        for key, method, value, expected in (
+            ("night_bright_start", "set_night_brightness_time", 1320, (1320, 0)),
+            ("upper_warning_temp", "set_warning_temps", 40, (0, 40)),
+        ):
+            with (
+                self.subTest(key=key),
+                patch.object(thermostat, method, new_callable=AsyncMock) as setter,
+            ):
+                description = next(
+                    d for d in number.NUMBER_DESCRIPTIONS if d.key == key
+                )
+                await description.set_fn(thermostat, value)
+                setter.assert_awaited_once_with(*expected)
+
+    async def test_advanced_option_enables_only_integration_disabled_regular_sensors(
+        self,
+    ):
+        entry, thermostat, coordinator = self.make_entry(DEVICE_TYPE_NEW)
+        registry = er.async_get(self.hass)
+        existing = {}
+        for key, disabled_by in (
+            ("sensor_type", er.RegistryEntryDisabler.INTEGRATION),
+            ("manual_floor_temp", er.RegistryEntryDisabler.USER),
+            ("manual_air_temp", None),
+            ("last_successful_update", er.RegistryEntryDisabler.INTEGRATION),
+        ):
+            existing[key] = registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                f"test_{key}",
+                config_entry=entry,
+                disabled_by=disabled_by,
+            ).entity_id
+        await sensor.async_setup_entry(self.hass, entry, MagicMock())
+        self.assertEqual(
+            registry.async_get(existing["sensor_type"]).disabled_by,
+            er.RegistryEntryDisabler.INTEGRATION,
+        )
+        # The same entry and registry survive the options reload.
+        object.__setattr__(
+            entry, "options", MappingProxyType({"show_advanced_sensors": True})
+        )
+        await sensor.async_setup_entry(self.hass, entry, MagicMock())
+        self.assertIsNone(registry.async_get(existing["sensor_type"]).disabled_by)
+        self.assertEqual(
+            registry.async_get(existing["manual_floor_temp"]).disabled_by,
+            er.RegistryEntryDisabler.USER,
+        )
+        self.assertIsNone(registry.async_get(existing["manual_air_temp"]).disabled_by)
+        self.assertEqual(
+            registry.async_get(existing["last_successful_update"]).disabled_by,
+            er.RegistryEntryDisabler.INTEGRATION,
+        )
+        object.__setattr__(
+            entry, "options", MappingProxyType({"show_advanced_sensors": False})
+        )
+        await sensor.async_setup_entry(self.hass, entry, MagicMock())
+        self.assertIsNone(registry.async_get(existing["manual_air_temp"]).disabled_by)
+
     async def test_failed_command_does_not_request_success_refresh(self):
         entry, thermostat, coordinator = self.make_entry(DEVICE_TYPE_OLD)
         coordinator.async_execute_command.side_effect = RuntimeError("command failed")

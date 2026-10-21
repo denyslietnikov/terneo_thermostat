@@ -147,6 +147,79 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
         description = next(d for d in SENSOR_DESCRIPTIONS if d.key == key)
         return TerneoSensorEntity(coordinator, client, config, description)
 
+    async def test_concurrent_limits_preserve_both_confirmed_changes(self):
+        for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
+            with self.subTest(profile=profile):
+                self.params = [[27, 1, "5"], [26, 1, "45"], [125, 7, "0"]]
+                config, client, coordinator = self.make_coordinator(profile)
+                await self.poll(coordinator)
+                entities = {
+                    d.key: TerneoNumberEntity(coordinator, client, config, d)
+                    for d in NUMBER_DESCRIPTIONS
+                    if d.key in ("lower_floor_limit", "upper_floor_limit")
+                }
+                started, release = asyncio.Event(), asyncio.Event()
+                writes = []
+
+                async def blocked_post(url, **kwargs):
+                    if "par" in kwargs["json"]:
+                        writes.append(kwargs["json"]["par"])
+                        if len(writes) == 1:
+                            started.set()
+                            await release.wait()
+                    return self.post(url, **kwargs)
+
+                with patch("tests.http.post", side_effect=blocked_post):
+                    first = asyncio.create_task(
+                        entities["lower_floor_limit"].async_set_native_value(10)
+                    )
+                    await started.wait()
+                    second = asyncio.create_task(
+                        entities["upper_floor_limit"].async_set_native_value(40)
+                    )
+                    await asyncio.sleep(0)
+                    release.set()
+                    await asyncio.gather(first, second)
+                self.assertEqual((client.lower_limit, client.upper_limit), (10, 40))
+                self.assertEqual(len(writes), 2)
+
+    async def test_missing_telemetry_clears_readings_instead_of_refreshing_old_values(
+        self,
+    ):
+        _, client, coordinator = self.make_coordinator(DEVICE_TYPE_NEW)
+        await self.poll(coordinator)
+        self.status = {"t.5": "416"}
+        await self.poll(coordinator)
+        self.assertEqual(client.setpoint, 26)
+        self.assertIsNone(client.floor_temperature)
+        self.assertIsNone(client.air_temperature)
+        self.assertIsNone(client.relay_state)
+        self.assertIsNone(client.mode)
+        self.assertIsNone(client._last_relay_update)
+        self.assertFalse(client.fast_poll_supported)
+        climate = TerneoClimateEntity(coordinator, client, coordinator.config_entry)
+        self.assertIsNone(climate.hvac_mode)
+        self.assertIsNone(climate.hvac_action)
+        self.assertIsNone(climate.preset_mode)
+        for key in ("current_power", "heating_active"):
+            description = next(d for d in SENSOR_DESCRIPTIONS if d.key == key)
+            entity = TerneoSensorEntity(
+                coordinator, client, coordinator.config_entry, description
+            )
+            self.assertIsNone(entity.native_value)
+
+    async def test_nonfinite_temperatures_are_failed_polls_and_preserve_cache(self):
+        _, client, coordinator = self.make_coordinator()
+        await self.poll(coordinator)
+        for value in ("nan", "inf", "-inf", "1e999", True, None):
+            with self.subTest(value=value):
+                self.status["t.1"] = value
+                await self.poll(coordinator)
+                self.assertEqual(client.floor_temperature, 23)
+                self.assertEqual(client.last_refresh_error_category, "protocol")
+                self.status["t.1"] = "368"
+                await self.poll(coordinator)
+
     async def test_initial_full_then_status_only_for_both_protocols(self):
         for profile in (DEVICE_TYPE_OLD, DEVICE_TYPE_NEW):
             with self.subTest(profile=profile):

@@ -30,6 +30,18 @@ ENERGY_SAVE_INTERVAL = timedelta(minutes=5)
 ENERGY_STORAGE_VERSION = 1
 
 
+class EnergyStore(Store[dict[str, float]]):
+    """Track completed writes, including HA's deferred final-write phase."""
+
+    last_saved_counters: dict[str, float] | None = None
+
+    async def _async_write_data(self, data: dict) -> None:
+        # Store.async_save logs and swallows disk errors. This hook only advances
+        # the snapshot after the actual write succeeds, so failures remain dirty.
+        await super()._async_write_data(data)
+        self.last_saved_counters = data["data"].copy()
+
+
 class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
     """Serialize polling and commands to avoid overlapping HTTP requests."""
 
@@ -56,7 +68,7 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         self._last_settings_attempt: float | None = None
         self._force_full_refresh = True
         identity = sha256(thermostat.sn.encode()).hexdigest()
-        self._energy_store: Store[dict[str, float]] = Store(
+        self._energy_store = EnergyStore(
             hass,
             ENERGY_STORAGE_VERSION,
             f"{DOMAIN}.energy.{identity}",
@@ -79,6 +91,7 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
             except ValueError as err:
                 # Do not silently overwrite invalid nonempty storage with zeros.
                 raise ConfigEntryError("Invalid stored heating counters") from err
+            self._energy_store.last_saved_counters = self.thermostat.energy_counters
         self._energy_restored = True
 
     @callback
@@ -110,7 +123,9 @@ class TerneoCoordinator(DataUpdateCoordinator[TerneoThermostat]):
         async with self._request_lock:
             if not self._energy_restored or self._energy_shutdown_complete:
                 return
-            await self._energy_store.async_save(self.thermostat.energy_counters)
+            counters = self.thermostat.energy_counters
+            if counters != self._energy_store.last_saved_counters:
+                await self._energy_store.async_save(counters)
 
     async def async_shutdown(self) -> None:
         """Stop all timers and flush confirmed counters without estimating a tail."""

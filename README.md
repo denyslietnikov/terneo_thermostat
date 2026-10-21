@@ -71,6 +71,10 @@ These actions require an explicit entity, device, or area target.
   temperatures are rejected as protocol errors.
 - **Command failed:** check the actual state before retrying; a timed-out command
   may already have applied.
+- **Child lock while off:** legacy AX firmware may ignore enabling the child lock
+  while the thermostat is off and clear it when turned off. Enable the thermostat
+  explicitly before enabling its child lock. The integration reports a verified
+  refusal without automatically changing power or retrying the write.
 - **Diagnostics:** enable connection sensors or select **Download diagnostics**
   from the integration menu when reporting an issue.
 

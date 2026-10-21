@@ -159,6 +159,88 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.coordinators.append(coordinator)
         return config, thermostat, coordinator
 
+    async def test_legacy_child_lock_refused_while_off_is_a_clear_validation_error(
+        self,
+    ):
+        config, thermostat, coordinator = self.make_coordinator()
+        # The decision must use the verified readback, not potentially stale cache.
+        thermostat._power_on = True
+        thermostat._parameters = {124: (7, "0"), 125: (7, "0")}
+        description = next(d for d in SWITCH_DESCRIPTIONS if d.key == "children_lock")
+        switch = TerneoSwitchEntity(coordinator, thermostat, config, description)
+        with (
+            patch(
+                "tests.http.post",
+                side_effect=[
+                    response({"success": "true"}),
+                    response(
+                        {"sn": thermostat.sn, "par": [[124, 7, "0"], [125, 7, "1"]]}
+                    ),
+                ],
+            ) as http,
+            self.assertNoLogs("custom_components.terneo.thermostat", level="WARNING"),
+            self.assertRaisesRegex(
+                ServiceValidationError, "child lock while powered off"
+            ),
+        ):
+            await switch.async_turn_on()
+        self.assertEqual(
+            [call.kwargs["json"] for call in http.call_args_list],
+            [
+                {"sn": thermostat.sn, "par": [[124, 7, "1"]]},
+                {"sn": thermostat.sn, "cmd": 1},
+            ],
+        )
+        self.assertEqual(thermostat._parameters, {124: (7, "0"), 125: (7, "0")})
+        self.assertTrue(coordinator._force_full_refresh)
+        self.assertNotIn("outcome is unknown", thermostat.last_update_error)
+        self.assertEqual(thermostat._request_error_counts["protocol"], 1)
+
+    async def test_child_lock_success_uses_readback_despite_cached_off_state(self):
+        _, thermostat, coordinator = self.make_coordinator()
+        thermostat._power_on = False
+        thermostat._parameters = {124: (7, "0"), 125: (7, "1")}
+        with patch(
+            "tests.http.post",
+            side_effect=[
+                response({"success": "true"}),
+                response({"sn": thermostat.sn, "par": [[124, 7, "1"], [125, 7, "0"]]}),
+            ],
+        ) as http:
+            await coordinator.async_execute_command(thermostat.set_children_lock, True)
+        self.assertEqual(http.call_count, 2)
+        self.assertEqual(http.call_args_list[0].kwargs["json"]["par"], [[124, 7, "1"]])
+        self.assertIsNone(thermostat.last_update_error)
+
+    async def test_child_lock_other_unconfirmed_outcomes_keep_strict_failure(self):
+        for profile, records in (
+            (DEVICE_TYPE_OLD, [[124, 7, "0"], [125, 7, "0"]]),
+            (DEVICE_TYPE_OLD, [[124, 7, "0"]]),
+            (DEVICE_TYPE_OLD, [[124, 2, "0"], [125, 7, "1"]]),
+            (DEVICE_TYPE_NEW, [[124, 7, "0"], [125, 7, "1"]]),
+        ):
+            with self.subTest(profile=profile, records=records):
+                _, thermostat, coordinator = self.make_coordinator(device_type=profile)
+                reply = response({"sn": thermostat.sn, "par": records})
+                replies = (
+                    [response({"success": "true"}), reply]
+                    if profile == DEVICE_TYPE_OLD
+                    else [reply]
+                )
+                with (
+                    patch("tests.http.post", side_effect=replies) as http,
+                    self.assertLogs(
+                        "custom_components.terneo.thermostat", level="WARNING"
+                    ),
+                    self.assertRaises(HomeAssistantError) as raised,
+                ):
+                    await coordinator.async_execute_command(
+                        thermostat.set_children_lock, True
+                    )
+                self.assertNotIsInstance(raised.exception, ServiceValidationError)
+                self.assertIn("outcome is unknown", str(raised.exception))
+                self.assertEqual(http.call_count, len(replies))
+
     def register_climate(self, config):
         return (
             er.async_get(self.hass)

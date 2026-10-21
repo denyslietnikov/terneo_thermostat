@@ -266,6 +266,22 @@ class CommandLoggingTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn(sensitive, " ".join(logs.output))
                 self.assertEqual(http.call_count, 1)
 
+    async def test_child_lock_boolean_values_are_visible_without_identifiers(self):
+        client = self.make_client(DEVICE_TYPE_NEW)
+        with (
+            self.assertLogs(LOGGER, level="DEBUG") as logs,
+            patch(
+                "tests.http.post",
+                return_value=response({"sn": SERIAL, "par": [[124, 7, "0"]]}),
+            ),
+        ):
+            self.assertFalse(await client.set_children_lock(True))
+        warning = next(r for r in logs.records if r.levelno == logging.WARNING)
+        self.assertEqual(warning.args[3], {124: {"type": 7, "value": "1"}})
+        self.assertEqual(warning.args[4], {124: {"type": 7, "value": "0"}})
+        for identifier in (SERIAL, HOST):
+            self.assertNotIn(identifier, " ".join(logs.output))
+
     async def test_normal_poll_does_not_emit_command_logs(self):
         client = self.make_client()
         with (

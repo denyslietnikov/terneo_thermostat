@@ -34,6 +34,7 @@ _COMMAND_LOG_VALUE_PARAMETERS = frozenset(
         ParamNum.SET_TEMPERATURE,
         ParamNum.COOLING_CONTROL_WAY,
         ParamNum.POWER_OFF,
+        ParamNum.CHILDREN_LOCK,
     }
 )
 _PAIRED_SETTING_PARAMETERS = frozenset(
@@ -71,6 +72,7 @@ def _command_log_parameters(
         if (
             number in _COMMAND_LOG_VALUE_PARAMETERS
             and data_type != DataType.CSTRING
+            and (number != ParamNum.CHILDREN_LOCK or data_type == DataType.BOOL)
             and len(value) <= 12
         ):
             try:
@@ -475,6 +477,25 @@ class TerneoThermostat:
             ):
                 mismatches.append(int(number))
         if mismatches:
+            if (
+                source == "legacy_readback"
+                and requested == {ParamNum.CHILDREN_LOCK: (DataType.BOOL, "1")}
+                and confirmed.get(ParamNum.CHILDREN_LOCK) == (DataType.BOOL, "0")
+                and confirmed.get(ParamNum.POWER_OFF) == (DataType.BOOL, "1")
+            ):
+                # AX can ignore child-lock enable while off. Classify only an
+                # identity-checked readback, never a cached power state or receipt.
+                message = (
+                    "Thermostat did not enable child lock while powered off. "
+                    "Turn the thermostat on before enabling child lock"
+                )
+                _LOGGER.debug(
+                    "Terneo write %s rejected: source=%s reason=child_lock_while_off",
+                    write_id,
+                    source,
+                )
+                self._request_failed(message, command=True)
+                raise ValueError(message)
             _LOGGER.warning(
                 "Terneo write %s not confirmed: source=%s mismatches=%s requested=%s actual=%s",
                 write_id,
